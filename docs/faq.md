@@ -185,11 +185,8 @@ All code is open source on GitHub:
 
 ## Getting Help
 
-- **Discord:** [discord.gg/starkshield](https://discord.gg/starkshield)
-- **GitHub Issues:** [github.com/your-org/starkshield/issues](https://github.com/your-org/starkshield/issues)
-- **Email:** support@starkshield.io
-- **Twitter:** [@StarkShield](https://twitter.com/starkshield)
+- **Email:** info@shieldtrade.io
 
 ## Still have questions?
 
-Join our [Discord](https://discord.gg/starkshield) - our team and community are happy to help!
+Email us at info@shieldtrade.io.

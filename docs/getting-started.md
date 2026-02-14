@@ -222,9 +222,8 @@ cd solver && RUST_LOG=debug cargo run
 
 ### Getting Help
 
-- **Discord**: [Join our community](https://discord.gg/starkshield)
-- **GitHub Issues**: [Report bugs](https://github.com/your-org/starkshield/issues)
-- **Documentation**: Check `/docs` directory
+- **Email**: info@shieldtrade.io
+- **Documentation**: Check the `/docs` directory
 
 ## Next Steps
 

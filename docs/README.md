@@ -144,7 +144,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](../CONTRIBUTING.md) for g
 - ZK circuits use well-tested Circom libraries
 - All code is open source and verifiable
 
-Report security issues to: security@starkshield.io
+Report security issues to: info@shieldtrade.io
 
 ### License
 
@@ -158,6 +158,4 @@ This project is licensed under the MIT License.
 
 ### Contact
 
-- Twitter: [@StarkShield](https://twitter.com/starkshield)
-- Discord: [Join our server](https://discord.gg/starkshield)
-- Email: team@starkshield.io
+- Email: info@shieldtrade.io

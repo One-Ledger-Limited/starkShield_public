@@ -11,6 +11,9 @@
 *.secret
 secrets/
 
+# Internal docs (keep private; do not publish)
+doc/
+
 # Logs / runtime state
 logs/
 *.log
