@@ -41,10 +41,23 @@ tar -czf "$BACKUP_FILE" "$COMPOSE_FILE" .env deploy.sh update.sh backup.sh 2>/de
 echo "💾 Backup created: $BACKUP_FILE"
 
 echo "🛑 Stopping existing containers..."
-$COMPOSE_CMD -f "$COMPOSE_FILE" down || true
+$COMPOSE_CMD -f "$COMPOSE_FILE" down --remove-orphans || true
+
+# If compose couldn't fully tear down (common on some hosts), ensure our named resources
+# are removed before recreating to avoid "already exists" conflicts.
+docker rm -f starkshield-redis starkshield-solver starkshield-frontend >/dev/null 2>&1 || true
+docker network rm starkshield_starkshield-network >/dev/null 2>&1 || true
 
 echo "🔨 Building and starting services..."
-$COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build
+# Some hosts configure a flaky Docker registry mirror. BuildKit/buildx will attempt to resolve
+# base image metadata via the mirror even when images are already cached locally, which can
+# fail deployments with transient 5xx errors. Force the legacy builder and disable pulling.
+export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
+export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
+export COMPOSE_BAKE="${COMPOSE_BAKE:-0}"
+
+$COMPOSE_CMD -f "$COMPOSE_FILE" build --pull=false
+$COMPOSE_CMD -f "$COMPOSE_FILE" up -d
 
 echo "⏳ Waiting for services..."
 sleep 15

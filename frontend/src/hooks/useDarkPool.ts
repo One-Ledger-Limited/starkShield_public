@@ -130,10 +130,15 @@ export const useDarkPool = () => {
       intent_hash: proof.intent_hash,
       nullifier: proof.nullifier,
       proof_data: proof.proof_data,
+      // Base-unit public inputs as computed by the prover.
+      // The solver uses these for on-chain settlement to avoid any decimals/unit ambiguity.
+      proof_public_inputs: proof.public_inputs,
       public_inputs: {
         user: userAddress,
         token_in: tokenIn,
         token_out: tokenOut,
+        // Human-readable token amounts. The solver converts these to base units using token decimals
+        // when building on-chain settlement calldata.
         amount_in: amountIn,
         min_amount_out: minAmountOut,
         deadline,

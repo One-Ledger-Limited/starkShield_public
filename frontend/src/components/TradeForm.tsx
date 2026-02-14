@@ -14,7 +14,7 @@ import {
 import { fetchPragmaTwap } from '../../lib/pragma-twap';
 import { useProofHistory } from '../hooks/useProofHistory';
 import { useFlowProgress } from '../hooks/useFlowProgress';
-import { parseUnits } from 'ethers';
+import { formatUnits, parseUnits } from 'ethers';
 import { hash } from 'starknet';
 
 interface TradeParams {
@@ -60,7 +60,7 @@ async function starknetCall(
   entrypoint: string,
   calldata: string[],
 ): Promise<any> {
-  const payload = {
+  const buildPayload = (blockTag: 'pending' | 'latest') => ({
     jsonrpc: '2.0',
     id: Date.now(),
     method: 'starknet_call',
@@ -70,17 +70,74 @@ async function starknetCall(
         entry_point_selector: hash.getSelectorFromName(entrypoint),
         calldata,
       },
-      'latest',
+      // Prefer "pending" so just-submitted approvals reflect faster, but
+      // some RPC providers reject it with "Invalid params", so we fall back.
+      blockTag,
     ],
+  });
+
+  const isInvalidParams = (msg: unknown) => {
+    const s = String(msg ?? '');
+    return /invalid params/i.test(s) || /InvalidParams/i.test(s);
   };
-  const { data } = await apiClient.post<any>('/v1/starknet-rpc', payload);
-  if (!data || typeof data !== 'object' || data.jsonrpc !== '2.0') {
-    throw new Error('RPC proxy returned invalid response (expected JSON-RPC 2.0).');
+
+  // Primary: use solver proxy (same-origin, avoids CORS issues).
+  const callViaProxy = async (blockTag: 'pending' | 'latest') => {
+    const payload = buildPayload(blockTag);
+    const { data } = await apiClient.post<any>('/v1/starknet-rpc', payload);
+    if (!data || typeof data !== 'object' || data.jsonrpc !== '2.0') {
+      throw new Error('RPC proxy returned invalid response (expected JSON-RPC 2.0).');
+    }
+    if (data.error) {
+      throw new Error(data.error?.message ?? 'Starknet RPC returned error');
+    }
+    return data?.result;
+  };
+
+  try {
+    try {
+      return await callViaProxy('pending');
+    } catch (e) {
+      if (isInvalidParams((e as any)?.message ?? e)) {
+        return await callViaProxy('latest');
+      }
+      throw e;
+    }
+  } catch (proxyErr) {
+    // Fallback: call the configured RPC URL directly from the browser.
+    // This helps when the server can't reach the provider, while the user's browser can.
+    const rpcUrl = (import.meta.env.VITE_STARKNET_RPC as string | undefined) ?? '';
+    if (!rpcUrl) throw proxyErr;
+    try {
+      const callDirect = async (blockTag: 'pending' | 'latest') => {
+        const payload = buildPayload(blockTag);
+        const resp = await fetch(rpcUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await resp.json().catch(() => null);
+        if (!data || typeof data !== 'object' || data.jsonrpc !== '2.0') {
+          throw proxyErr;
+        }
+        if (data.error) {
+          throw new Error(data.error?.message ?? 'Starknet RPC returned error');
+        }
+        return data?.result;
+      };
+
+      try {
+        return await callDirect('pending');
+      } catch (e) {
+        if (isInvalidParams((e as any)?.message ?? e)) {
+          return await callDirect('latest');
+        }
+        throw e;
+      }
+    } catch {
+      throw proxyErr;
+    }
   }
-  if (data.error) {
-    throw new Error(data.error?.message ?? 'Starknet RPC returned error');
-  }
-  return data?.result;
 }
 
 function safeReadDraft(): DraftIntentV1 | null {
@@ -122,12 +179,22 @@ function normalizeAddress(address: string): string {
   return `0x${hex.padStart(64, '0')}`;
 }
 
+const TOKEN_DECIMALS_BY_ADDRESS: Record<string, number> = {
+  [normalizeAddress('0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7')]: 18, // ETH
+  [normalizeAddress('0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d')]: 18, // STRK
+  [normalizeAddress('0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8')]: 6, // USDC
+  [normalizeAddress('0x068f5c6a61780768455de69077e07e89787839bf8166decfbf92b645209c0fb8')]: 6, // USDT
+};
+
+function tokenDecimals(tokenAddress: string): number {
+  return TOKEN_DECIMALS_BY_ADDRESS[normalizeAddress(tokenAddress)] ?? 18;
+}
+
 const COMMON_TOKENS = [
   { symbol: 'ETH', address: '0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7' },
   { symbol: 'STRK', address: '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d' },
   { symbol: 'USDC', address: '0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8' },
   { symbol: 'USDT', address: '0x068f5c6a61780768455de69077e07e89787839bf8166decfbf92b645209c0fb8' },
-  { symbol: 'DAI', address: '0x00da114221cb83fa859dbdb4c44beeaa0bb37c7537ad5ae66fe5e0efd20e6eb3' },
 ] as const;
 
 const TOKEN_SYMBOL_BY_ADDRESS = new Map<string, string>(COMMON_TOKENS.map((t) => [t.address, t.symbol]));
@@ -136,7 +203,6 @@ const TWAP_PAIR_BY_SYMBOL: Record<string, string> = {
   STRK: 'STRK/USD',
   USDC: 'USDC/USD',
   USDT: 'USDT/USD',
-  DAI: 'DAI/USD',
 };
 
 function getTokenSymbol(tokenAddress: string): string {
@@ -170,6 +236,7 @@ export const TradeForm: React.FC = () => {
   const [needsApproval, setNeedsApproval] = useState(false);
   const [approveLoading, setApproveLoading] = useState(false);
   const [autoSubmitAfterApprove, setAutoSubmitAfterApprove] = useState(false);
+  const [approvalBufferPercent, setApprovalBufferPercent] = useState<number>(20);
 
   const isAuthed = Boolean(localStorage.getItem('token')) || !requireLogin;
   const actionBusy = isSubmitting || precheckLoading || approveLoading || autoSubmitAfterApprove;
@@ -272,37 +339,37 @@ export const TradeForm: React.FC = () => {
     }
 
     // Balance/allowance precheck against Starknet ERC20 (best-effort UX + backend enforcement).
-    if (tradeParams.tokenIn && tradeParams.amountIn) {
-      setPrecheckLoading(true);
-      setNeedsApproval(false);
-      try {
-        const tokenIn = tradeParams.tokenIn;
-        const spender = (import.meta.env.VITE_DARK_POOL_ADDRESS as string | undefined) ?? '';
+	    if (tradeParams.tokenIn && tradeParams.amountIn) {
+	      setPrecheckLoading(true);
+	      setNeedsApproval(false);
+	      try {
+	        const tokenIn = tradeParams.tokenIn;
+	        const spender = (import.meta.env.VITE_DARK_POOL_ADDRESS as string | undefined) ?? '';
 
-        const decimalsResult = await starknetCall(tokenIn, 'decimals', []);
-        const decimals = decimalsResult?.[0] ? Number(BigInt(decimalsResult[0])) : 18;
-        const required = parseUnits(tradeParams.amountIn, Number.isFinite(decimals) ? decimals : 18);
+	        const decimals = tokenDecimals(tokenIn);
+	        const required = parseUnits(tradeParams.amountIn, decimals);
 
-        const balRes = await starknetCall(tokenIn, 'balanceOf', [address]);
-        const balance = uint256ToBigInt(balRes);
-        if (balance < required) {
-          setPrecheckMessage('Insufficient token balance for amount_in.');
-          setErrorMessage('Insufficient token balance for amount_in.');
-          return;
-        }
+	        const balRes = await starknetCall(tokenIn, 'balanceOf', [address]);
+	        const balance = uint256ToBigInt(balRes);
+	        if (balance < required) {
+	          const msg = `Insufficient token balance for amount_in. Balance=${formatUnits(balance, decimals)} Required=${tradeParams.amountIn}`;
+	          setPrecheckMessage(msg);
+	          setErrorMessage(msg);
+	          return;
+	        }
 
-        if (spender) {
-          const allowanceRes = await starknetCall(tokenIn, 'allowance', [address, spender]);
-          const allowance = uint256ToBigInt(allowanceRes);
-          if (allowance < required) {
-            setPrecheckMessage('Insufficient allowance. Please approve the Dark Pool contract before submitting.');
-            setErrorMessage('Insufficient allowance. Please approve the Dark Pool contract before submitting.');
-            setNeedsApproval(true);
-            return;
-          }
-        }
-      } catch (e) {
-        // Don't hard-block on RPC issues; backend may still enforce depending on config.
+	        if (spender) {
+	          const allowanceRes = await starknetCall(tokenIn, 'allowance', [address, spender]);
+	          const allowance = uint256ToBigInt(allowanceRes);
+	          if (allowance < required) {
+	            setPrecheckMessage('Please approve the Dark Pool contract before submitting.');
+	            setErrorMessage('Please approve the Dark Pool contract before submitting.');
+	            setNeedsApproval(true);
+	            return;
+	          }
+	        }
+	      } catch (e) {
+	        // Don't hard-block on RPC issues; backend may still enforce depending on config.
         setPrecheckMessage(`Unable to run balance/allowance precheck (RPC): ${toUserErrorMessage(e)}`);
       } finally {
         setPrecheckLoading(false);
@@ -355,18 +422,17 @@ export const TradeForm: React.FC = () => {
     let attempts = 0;
     const maxAttempts = 30; // ~60s
 
-    const run = async () => {
-      while (!cancelled && attempts < maxAttempts) {
-        attempts += 1;
-        try {
-          const decimalsResult = await starknetCall(tradeParams.tokenIn, 'decimals', []);
-          const decimals = decimalsResult?.[0] ? Number(BigInt(decimalsResult[0])) : 18;
-          const required = parseUnits(tradeParams.amountIn, Number.isFinite(decimals) ? decimals : 18);
+	    const run = async () => {
+	      while (!cancelled && attempts < maxAttempts) {
+	        attempts += 1;
+	        try {
+	          const decimals = tokenDecimals(tradeParams.tokenIn);
+	          const required = parseUnits(tradeParams.amountIn, decimals);
 
-          const allowanceRes = await starknetCall(tradeParams.tokenIn, 'allowance', [address, spender]);
-          const allowance = uint256ToBigInt(allowanceRes);
-          if (allowance >= required) {
-            setAutoSubmitAfterApprove(false);
+	          const allowanceRes = await starknetCall(tradeParams.tokenIn, 'allowance', [address, spender]);
+	          const allowance = uint256ToBigInt(allowanceRes);
+	          if (allowance >= required) {
+	            setAutoSubmitAfterApprove(false);
             setNeedsApproval(false);
             setPrecheckMessage('Allowance updated. Submitting intent...');
             await handleSubmitIntent();
@@ -605,6 +671,12 @@ export const TradeForm: React.FC = () => {
             {precheckMessage}
           </div>
         )}
+        {autoSubmitAfterApprove && (
+          <div className="rounded-lg border border-yellow-500/30 bg-yellow-600/10 px-4 py-3 text-sm text-yellow-200 flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span>Waiting for allowance update...</span>
+          </div>
+        )}
         {!proofData ? (
           <button
             onClick={handleGenerateProof}
@@ -664,47 +736,113 @@ export const TradeForm: React.FC = () => {
 	              )}
 	            </button>
 
-            {needsApproval && Boolean((import.meta.env.VITE_DARK_POOL_ADDRESS as string | undefined)) && (
-              <button
-                onClick={async () => {
-                  const tokenIn = tradeParams.tokenIn;
-                  const spender = (import.meta.env.VITE_DARK_POOL_ADDRESS as string | undefined) ?? '';
-                  if (!account) {
-                    setErrorMessage('Please connect wallet to approve.');
-                    return;
-                  }
-                  if (!tokenIn || !spender) {
-                    setErrorMessage('Missing token/spender for approval.');
-                    return;
-                  }
-                  try {
-                    setApproveLoading(true);
-                    setErrorMessage(null);
-                    setPrecheckMessage(null);
+	            {needsApproval && Boolean((import.meta.env.VITE_DARK_POOL_ADDRESS as string | undefined)) && (
+                <>
+                  <div className="rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm text-gray-200">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-gray-100">Approval Limit</div>
+                        <div className="text-xs text-gray-400">
+                          Approve up to required amount plus a buffer. Default: 20%.
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={0}
+                          max={500}
+                          step={1}
+                          value={Number.isFinite(approvalBufferPercent) ? approvalBufferPercent : 20}
+                          onChange={(e) => {
+                            const raw = Number(e.target.value);
+                            if (!Number.isFinite(raw)) {
+                              setApprovalBufferPercent(20);
+                              return;
+                            }
+                            const next = Math.max(0, Math.min(500, Math.floor(raw)));
+                            setApprovalBufferPercent(next);
+                          }}
+                          className="w-24 rounded-md border border-white/10 bg-white/5 px-2 py-1 text-right text-white focus:outline-none focus:border-purple-500"
+                          aria-label="Approval buffer percent"
+                        />
+                        <span className="text-gray-300">%</span>
+                      </div>
+                    </div>
+                  </div>
 
-                    const decimalsResult = await starknetCall(tokenIn, 'decimals', []);
-                    const decimals = decimalsResult?.[0] ? Number(BigInt(decimalsResult[0])) : 18;
-                    const required = parseUnits(tradeParams.amountIn, Number.isFinite(decimals) ? decimals : 18);
-                    const low = required & ((1n << 128n) - 1n);
-                    const high = required >> 128n;
-                    const feltHex = (v: bigint) => `0x${v.toString(16)}`;
-
-                    await (account as any).execute([
-                      {
-                        contractAddress: tokenIn,
-                        entrypoint: 'approve',
-                        calldata: [spender, feltHex(low), feltHex(high)],
-                      },
-                    ]);
-
-                    setSuccessMessage('Approval transaction submitted. Waiting for allowance update...');
-                    setAutoSubmitAfterApprove(true);
-                  } catch (e) {
-                    setErrorMessage(toUserErrorMessage(e));
-	                  } finally {
-	                    setApproveLoading(false);
+	                <button
+	                onClick={async () => {
+	                  const tokenIn = tradeParams.tokenIn;
+	                  const spender = (import.meta.env.VITE_DARK_POOL_ADDRESS as string | undefined) ?? '';
+	                  if (!account) {
+	                    setErrorMessage('Please connect wallet to approve.');
+	                    return;
 	                  }
-	                }}
+	                  if (!tokenIn || !spender) {
+	                    setErrorMessage('Missing token/spender for approval.');
+	                    return;
+	                  }
+	                  try {
+	                    setApproveLoading(true);
+	                    setErrorMessage(null);
+	                    setPrecheckMessage(null);
+
+	                    const decimals = tokenDecimals(tokenIn);
+	                    const required = parseUnits(tradeParams.amountIn, decimals);
+                      const pct = BigInt(
+                        Math.max(0, Math.min(500, Math.floor(Number.isFinite(approvalBufferPercent) ? approvalBufferPercent : 20)))
+                      );
+                      // Ceil division so we never approve less than `required` due to truncation.
+                      const approveAmount = ((required * (100n + pct)) + 99n) / 100n;
+
+	                    // If allowance is already enough (RPC state may have updated), don't spend fees again.
+	                    const allowanceRes = await starknetCall(tokenIn, 'allowance', [address!, spender]);
+	                    const allowance = uint256ToBigInt(allowanceRes);
+	                    if (allowance >= required) {
+	                      setNeedsApproval(false);
+	                      setSuccessMessage('Allowance already sufficient.');
+	                      setAutoSubmitAfterApprove(false);
+	                      return;
+	                    }
+
+	                    // Approve a capped amount: required + user-configurable buffer (default 20%).
+                      const mask128 = (1n << 128n) - 1n;
+                      const low = approveAmount & mask128;
+                      const high = approveAmount >> 128n;
+	                    const feltHex = (v: bigint) => `0x${v.toString(16)}`;
+
+	                    try {
+	                      await (account as any).execute([
+	                        {
+	                          contractAddress: tokenIn,
+	                          entrypoint: 'approve',
+	                          calldata: [spender, feltHex(low), feltHex(high)],
+	                        },
+	                      ]);
+	                    } catch (e) {
+	                      // Some token implementations require setting allowance to 0 before increasing.
+	                      await (account as any).execute([
+	                        {
+	                          contractAddress: tokenIn,
+	                          entrypoint: 'approve',
+	                          calldata: [spender, feltHex(0n), feltHex(0n)],
+	                        },
+	                        {
+	                          contractAddress: tokenIn,
+	                          entrypoint: 'approve',
+	                          calldata: [spender, feltHex(low), feltHex(high)],
+	                        },
+	                      ]);
+	                    }
+
+	                    setSuccessMessage('Approval transaction submitted. Waiting for allowance update...');
+	                    setAutoSubmitAfterApprove(true);
+	                  } catch (e) {
+	                    setErrorMessage(toUserErrorMessage(e));
+	                  } finally {
+			                    setApproveLoading(false);
+			                  }
+			                }}
 	                disabled={approveDisabled}
 	                className="w-full bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg transition flex items-center justify-center space-x-2"
 	              >
@@ -713,11 +851,17 @@ export const TradeForm: React.FC = () => {
                     <Loader2 className="w-5 h-5 animate-spin" />
                     <span>Approving...</span>
                   </>
+                ) : autoSubmitAfterApprove ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span>Waiting for Allowance...</span>
+                  </>
                 ) : (
                   <span>Approve Token for Dark Pool</span>
                 )}
               </button>
-            )}
+                </>
+              )}
             
             <button
               onClick={() => {

@@ -11,6 +11,12 @@ pub struct RedisStorage {
     connection: Arc<RwLock<redis::aio::ConnectionManager>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MatchRetryState {
+    pub failures: u64,
+    pub next_retry_at_unix: u64,
+}
+
 impl RedisStorage {
     fn user_index_key(user: &str) -> String {
         // Canonicalize by felt value when possible (removes padding/casing differences).
@@ -30,6 +36,78 @@ impl RedisStorage {
         Ok(Self {
             connection: Arc::new(RwLock::new(connection)),
         })
+    }
+
+    fn match_retry_key(match_id: &str) -> String {
+        format!("match:retry:{}", match_id)
+    }
+
+    /// Returns retry backoff state for a match id (if any).
+    pub async fn get_match_retry_state(&self, match_id: &str) -> Result<Option<MatchRetryState>> {
+        let key = Self::match_retry_key(match_id);
+        let mut conn = self.connection.write().await;
+        let failures: Option<u64> = redis::cmd("HGET")
+            .arg(&key)
+            .arg("failures")
+            .query_async(&mut *conn)
+            .await?;
+        let next_retry_at_unix: Option<u64> = redis::cmd("HGET")
+            .arg(&key)
+            .arg("next_retry_at_unix")
+            .query_async(&mut *conn)
+            .await?;
+
+        if failures.is_none() && next_retry_at_unix.is_none() {
+            return Ok(None);
+        }
+
+        Ok(Some(MatchRetryState {
+            failures: failures.unwrap_or(0),
+            next_retry_at_unix: next_retry_at_unix.unwrap_or(0),
+        }))
+    }
+
+    /// Increments the failure counter and sets the next retry timestamp. Returns updated state.
+    pub async fn bump_match_retry_state(&self, match_id: &str, next_retry_at_unix: u64) -> Result<MatchRetryState> {
+        let key = Self::match_retry_key(match_id);
+        let mut conn = self.connection.write().await;
+
+        let failures: i64 = redis::cmd("HINCRBY")
+            .arg(&key)
+            .arg("failures")
+            .arg(1)
+            .query_async(&mut *conn)
+            .await?;
+
+        redis::cmd("HSET")
+            .arg(&key)
+            .arg("next_retry_at_unix")
+            .arg(next_retry_at_unix)
+            .query_async::<_, ()>(&mut *conn)
+            .await?;
+
+        // Avoid leaking keys forever.
+        let _ = redis::cmd("EXPIRE")
+            .arg(&key)
+            .arg(7 * 24 * 60 * 60) // 7 days
+            .query_async::<_, ()>(&mut *conn)
+            .await;
+
+        Ok(MatchRetryState {
+            failures: failures.max(0) as u64,
+            next_retry_at_unix,
+        })
+    }
+
+    /// Clears retry state for a match id (best-effort).
+    pub async fn clear_match_retry_state(&self, match_id: &str) -> Result<()> {
+        let key = Self::match_retry_key(match_id);
+        let mut conn = self.connection.write().await;
+        redis::cmd("DEL")
+            .arg(&key)
+            .query_async::<_, ()>(&mut *conn)
+            .await?;
+        Ok(())
     }
 
     /// Store a new intent
@@ -262,30 +340,55 @@ impl RedisStorage {
 
     /// Get matched pairs awaiting settlement
     pub async fn get_unsettled_matches(&self) -> Result<Vec<MatchedPair>> {
-        let mut conn = self.connection.write().await;
-        
-        let pair_ids: Vec<String> = redis::cmd("SMEMBERS")
-            .arg("intents:matched")
-            .query_async(&mut *conn)
-            .await?;
-        
+        // Fetch matched pair ids without holding the lock, then resolve pair + intent status
+        // using the normal helpers (avoids nested lock deadlocks).
+        let pair_ids: Vec<String> = {
+            let mut conn = self.connection.write().await;
+            redis::cmd("SMEMBERS")
+                .arg("intents:matched")
+                .query_async(&mut *conn)
+                .await?
+        };
+
         let mut pairs = Vec::new();
         for id in pair_ids {
-            let key = format!("matched:{}", id);
-            if let Ok(Some(value)) = redis::cmd("GET")
-                .arg(&key)
-                .query_async::<_, Option<String>>(&mut *conn)
-                .await 
-            {
-                if let Ok(pair) = serde_json::from_str::<MatchedPair>(&value) {
-                    if pair.intent_a.status != IntentStatus::Settled {
-                        pairs.push(pair);
-                    }
+            let Some(pair) = self.get_matched_pair(&id).await? else {
+                // Stale set member.
+                let _ = self.mark_match_settled(&id).await;
+                continue;
+            };
+
+            let a = self.get_intent(&pair.intent_a.nullifier).await?;
+            let b = self.get_intent(&pair.intent_b.nullifier).await?;
+
+            // Only retry when both sides are still in Matched state.
+            match (a, b) {
+                (Some(a), Some(b))
+                    if a.status == IntentStatus::Matched
+                        && b.status == IntentStatus::Matched
+                        && a.settlement_tx_hash.is_none()
+                        && b.settlement_tx_hash.is_none() =>
+                {
+                    pairs.push(pair);
+                }
+                _ => {
+                    // Already settled/cancelled/expired or missing: clean up the set member.
+                    let _ = self.mark_match_settled(&id).await;
                 }
             }
         }
-        
+
         Ok(pairs)
+    }
+
+    pub async fn mark_match_settled(&self, match_id: &str) -> Result<()> {
+        let mut conn = self.connection.write().await;
+        redis::cmd("SREM")
+            .arg("intents:matched")
+            .arg(match_id)
+            .query_async::<_, ()>(&mut *conn)
+            .await?;
+        Ok(())
     }
 
     /// Get solver statistics

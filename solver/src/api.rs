@@ -573,6 +573,16 @@ async fn submit_intent(
             )),
         ));
     }
+    if !request.proof_public_inputs.is_empty() && request.proof_public_inputs.len() < 6 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            JsonResponse(error_response(
+                "INVALID_PUBLIC_INPUTS",
+                "Invalid proof_public_inputs (expected at least 6 elements)",
+                Some(correlation_id),
+            )),
+        ));
+    }
     if !is_valid_signature(&request.signature) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -690,6 +700,7 @@ async fn submit_intent(
         request.intent_hash,
         request.nullifier.clone(),
         request.proof_data,
+        request.proof_public_inputs,
         request.public_inputs,
         encrypted_details,
         expires_at,
@@ -725,6 +736,7 @@ async fn enforce_balance_allowance_precheck(
         contract_address: Felt,
         selector: Felt,
         calldata: Vec<Felt>,
+        block_tag: &'static str,
     ) -> Result<serde_json::Value, reqwest::Error> {
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
@@ -736,20 +748,89 @@ async fn enforce_balance_allowance_precheck(
                     "entry_point_selector": format!("0x{:x}", selector),
                     "calldata": calldata.into_iter().map(|v| format!("0x{:x}", v)).collect::<Vec<_>>(),
                 },
-                "latest"
+                // Use "pending" so approvals/balances reflect mempool state faster.
+                // This reduces "approve 2-3 times" UX issues due to provider propagation delays.
+                block_tag
             ]
         });
 
         reqwest::Client::new().post(rpc_url).json(&payload).send().await?.json().await
     }
 
-    fn parse_u256_result(json: &serde_json::Value) -> Option<BigUint> {
-        let result = json.get("result")?.as_array()?;
-        if result.len() < 2 {
+    async fn jsonrpc_starknet_call_best_effort(
+        rpc_url: &str,
+        contract_address: Felt,
+        selector: Felt,
+        calldata: Vec<Felt>,
+    ) -> Result<serde_json::Value, reqwest::Error> {
+        // Prefer "pending" so just-submitted approvals reflect faster.
+        // If a provider rejects the block tag (e.g., "Invalid params"), fall back to "latest".
+        let pending = jsonrpc_starknet_call(rpc_url, contract_address, selector, calldata.clone(), "pending").await?;
+        let msg = pending
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("");
+        if msg.to_lowercase().contains("invalid params") || msg.contains("InvalidParams") {
+            return jsonrpc_starknet_call(rpc_url, contract_address, selector, calldata, "latest").await;
+        }
+        Ok(pending)
+    }
+
+    fn jsonrpc_error_message(json: &serde_json::Value) -> Option<String> {
+        let err = json.get("error")?;
+        // Common shape: { "code": ..., "message": "...", "data": ... }
+        if let Some(msg) = err.get("message").and_then(|v| v.as_str()) {
+            return Some(msg.to_string());
+        }
+        Some(err.to_string())
+    }
+
+    fn parse_u256_like(value: &serde_json::Value) -> Option<(String, String)> {
+        // Support a few observed shapes across providers:
+        // 1) ["0xLOW", "0xHIGH"]
+        // 2) ["0xLOW"] (assume HIGH=0)
+        // 3) [{"low":"0x..","high":"0x.."}]
+        // 4) [{"balance":{"low":"0x..","high":"0x.."}}]
+        if let Some(arr) = value.as_array() {
+            if arr.is_empty() {
+                return None;
+            }
+            if arr.len() >= 2 && arr[0].is_string() && arr[1].is_string() {
+                return Some((arr[0].as_str()?.to_string(), arr[1].as_str()?.to_string()));
+            }
+            if arr.len() == 1 && arr[0].is_string() {
+                return Some((arr[0].as_str()?.to_string(), "0x0".to_string()));
+            }
+            if arr.len() >= 1 && arr[0].is_object() {
+                let obj = arr[0].as_object()?;
+                if let (Some(low), Some(high)) = (obj.get("low"), obj.get("high")) {
+                    return Some((low.as_str()?.to_string(), high.as_str()?.to_string()));
+                }
+                if let Some(balance) = obj.get("balance").and_then(|v| v.as_object()) {
+                    let low = balance.get("low")?.as_str()?.to_string();
+                    let high = balance.get("high")?.as_str()?.to_string();
+                    return Some((low, high));
+                }
+            }
             return None;
         }
-        let low = result[0].as_str()?;
-        let high = result[1].as_str()?;
+        if let Some(obj) = value.as_object() {
+            if let (Some(low), Some(high)) = (obj.get("low"), obj.get("high")) {
+                return Some((low.as_str()?.to_string(), high.as_str()?.to_string()));
+            }
+            if let Some(balance) = obj.get("balance").and_then(|v| v.as_object()) {
+                let low = balance.get("low")?.as_str()?.to_string();
+                let high = balance.get("high")?.as_str()?.to_string();
+                return Some((low, high));
+            }
+        }
+        None
+    }
+
+    fn parse_u256_result(json: &serde_json::Value) -> Option<BigUint> {
+        let result = json.get("result")?;
+        let (low, high) = parse_u256_like(result)?;
         let low = BigUint::from_str_radix(low.trim_start_matches("0x"), 16).ok()?;
         let high = BigUint::from_str_radix(high.trim_start_matches("0x"), 16).ok()?;
         Some(low + (high << 128u32))
@@ -838,7 +919,7 @@ async fn enforce_balance_allowance_precheck(
         )
     })?;
 
-    let decimals_json = jsonrpc_starknet_call(&state.starknet_rpc, token_addr, sel_decimals, vec![])
+    let decimals_json = jsonrpc_starknet_call_best_effort(&state.starknet_rpc, token_addr, sel_decimals, vec![])
         .await
         .map_err(|e| {
             error!("Precheck decimals RPC failed: {}", e);
@@ -851,6 +932,17 @@ async fn enforce_balance_allowance_precheck(
                 ),
             )
         })?;
+    if let Some(msg) = jsonrpc_error_message(&decimals_json) {
+        error!("Precheck decimals JSON-RPC error: {}", msg);
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            error_response(
+                "PRECHECK_RPC_ERROR",
+                "Failed to query token decimals",
+                Some(correlation_id.to_string()),
+            ),
+        ));
+    }
     let decimals = parse_felt_result(&decimals_json).ok_or_else(|| {
         (
             StatusCode::BAD_GATEWAY,
@@ -874,7 +966,7 @@ async fn enforce_balance_allowance_precheck(
         )
     })?;
 
-    let bal_json = jsonrpc_starknet_call(
+    let bal_json = jsonrpc_starknet_call_best_effort(
         &state.starknet_rpc,
         token_addr,
         sel_balance,
@@ -892,6 +984,17 @@ async fn enforce_balance_allowance_precheck(
             ),
         )
     })?;
+    if let Some(msg) = jsonrpc_error_message(&bal_json) {
+        error!("Precheck balanceOf JSON-RPC error: {}", msg);
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            error_response(
+                "PRECHECK_RPC_ERROR",
+                "Failed to query token balance",
+                Some(correlation_id.to_string()),
+            ),
+        ));
+    }
     let balance = parse_u256_result(&bal_json).ok_or_else(|| {
         (
             StatusCode::BAD_GATEWAY,
@@ -914,7 +1017,7 @@ async fn enforce_balance_allowance_precheck(
         ));
     }
 
-    let allowance_json = jsonrpc_starknet_call(
+    let allowance_json = jsonrpc_starknet_call_best_effort(
         &state.starknet_rpc,
         token_addr,
         sel_allowance,
@@ -932,6 +1035,17 @@ async fn enforce_balance_allowance_precheck(
             ),
         )
     })?;
+    if let Some(msg) = jsonrpc_error_message(&allowance_json) {
+        error!("Precheck allowance JSON-RPC error: {}", msg);
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            error_response(
+                "PRECHECK_RPC_ERROR",
+                "Failed to query token allowance",
+                Some(correlation_id.to_string()),
+            ),
+        ));
+    }
     let allowance = parse_u256_result(&allowance_json).ok_or_else(|| {
         (
             StatusCode::BAD_GATEWAY,
@@ -1067,17 +1181,34 @@ async fn confirm_match(
     let correlation_id = correlation_id_from_headers(&headers);
     require_auth(&headers, &state, &correlation_id)?;
 
-    state.matcher.settle_match_by_id(&match_id).await.map_err(|e| {
-        error!("Failed to settle match {}: {}", match_id, e);
-        (
-            StatusCode::BAD_REQUEST,
-            JsonResponse(error_response(
-                "SETTLEMENT_ERROR",
-                "Failed to settle match",
-                Some(correlation_id.clone()),
-            )),
-        )
-    })?;
+    state
+        .matcher
+        .settle_match_by_id(&match_id)
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            error!("Failed to settle match {}: {}", match_id, msg);
+
+            // Surface precheck failures as explicit, user-actionable errors.
+            let (code, user_message) = if msg.contains("INSUFFICIENT_ALLOWANCE") {
+                (
+                    "INSUFFICIENT_ALLOWANCE",
+                    "Insufficient token allowance for settlement. Please approve the Dark Pool contract and try again.",
+                )
+            } else if msg.contains("INSUFFICIENT_BALANCE") {
+                (
+                    "INSUFFICIENT_BALANCE",
+                    "Insufficient token balance for settlement. Please top up and try again.",
+                )
+            } else {
+                ("SETTLEMENT_ERROR", "Failed to settle match")
+            };
+
+            (
+                StatusCode::BAD_REQUEST,
+                JsonResponse(error_response(code, user_message, Some(correlation_id.clone()))),
+            )
+        })?;
 
     Ok(JsonResponse(ActionResponse {
         success: true,

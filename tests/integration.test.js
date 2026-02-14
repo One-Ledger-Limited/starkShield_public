@@ -18,8 +18,9 @@ describe('StarkShield Solver v1 Integration Tests', function () {
     user: '0x1234567890abcdef',
     token_in: '0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7',
     token_out: '0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8',
-    amount_in: '1000000000000000000',
-    min_amount_out: '3000000000',
+    // Human-readable token amounts; the solver converts to base units for circuit/on-chain encoding.
+    amount_in: '1',
+    min_amount_out: '0.3',
     chain_id: 'SN_SEPOLIA',
     domain_separator: 'starkshield-hackathon',
     version: 1,

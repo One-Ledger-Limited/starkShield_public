@@ -1,6 +1,6 @@
 [package]
 name = "starkshield-solver"
-version = "0.1.9"
+version = "0.1.44"
 edition = "2021"
 authors = ["StarkShield Team <team@starkshield.io>"]
 description = "Off-chain solver service for StarkShield dark pool"

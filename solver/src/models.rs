@@ -9,6 +9,10 @@ pub struct Intent {
     pub intent_hash: String,
     pub nullifier: String,
     pub proof_data: Vec<String>,
+    /// The circuit public inputs (base units) as produced by the prover.
+    /// Used for on-chain settlement calldata to avoid token decimals ambiguity.
+    #[serde(default)]
+    pub proof_public_inputs: Vec<String>,
     pub public_inputs: PublicInputs,
     pub encrypted_details: Vec<u8>, // Encrypted intent details
     pub status: IntentStatus,
@@ -67,6 +71,10 @@ pub struct SubmitIntentRequest {
     pub intent_hash: String,
     pub nullifier: String,
     pub proof_data: Vec<String>,
+    /// The circuit public inputs (base units) as produced by the prover.
+    /// If present, the solver will use these for on-chain settlement calldata.
+    #[serde(default)]
+    pub proof_public_inputs: Vec<String>,
     pub public_inputs: PublicInputs,
     pub encrypted_details: String, // base64 encoded
     pub signature: String,
@@ -155,6 +163,7 @@ impl Intent {
         intent_hash: String,
         nullifier: String,
         proof_data: Vec<String>,
+        proof_public_inputs: Vec<String>,
         public_inputs: PublicInputs,
         encrypted_details: Vec<u8>,
         expires_at: DateTime<Utc>,
@@ -165,6 +174,7 @@ impl Intent {
             intent_hash,
             nullifier,
             proof_data,
+            proof_public_inputs,
             public_inputs,
             encrypted_details,
             status: IntentStatus::Pending,
