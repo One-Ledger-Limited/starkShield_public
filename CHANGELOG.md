@@ -1,5 +1,79 @@
 # Changelog
 
+## [0.1.42] - 2026-02-14
+
+### Fixed
+- Solver API token balance/allowance prechecks now use `pending` state and accept more JSON-RPC return shapes, reducing `Token balance/allowance response missing fields`.
+- Frontend now maps `INSUFFICIENT_ALLOWANCE` to `Please approve the Dark Pool contract before submitting.`
+
+## [0.1.43] - 2026-02-14
+
+### Fixed
+- Frontend/solver Starknet RPC precheck now falls back from `pending` to `latest` when the RPC provider returns `Invalid params`, so approval requirements are detected reliably.
+
+## [0.1.44] - 2026-02-14
+
+### Fixed
+- Solver settlement retry loop now backs off after 3 consecutive `INSUFFICIENT_BALANCE/INSUFFICIENT_ALLOWANCE` failures to reduce log spam and RPC load.
+
+## [0.1.38] - 2026-02-14
+
+### Fixed
+- Settlement calldata now prefers prover-generated `public_inputs` (base units) provided at intent creation time, eliminating token-decimals/unit ambiguity that could settle `20 STRK` as `0.0000000000000002 STRK`.
+
+## [0.1.39] - 2026-02-14
+
+### Fixed
+- Frontend precheck now falls back to calling `VITE_STARKNET_RPC` directly if the solver RPC proxy is unreachable.
+- Solver settlement retries now handle additional nonce-error wording (`Invalid transaction nonce ... Account nonce: ...`) and no longer advances the cached nonce until a tx is successfully submitted.
+
+## [0.1.40] - 2026-02-14
+
+### Changed
+- Approval is no longer unlimited by default. Users can configure an approval buffer percent (default 20%) and the app will approve `required * (1 + buffer%)`.
+
+## [0.1.41] - 2026-02-14
+
+### Fixed
+- When an approval tx is submitted, the UI now shows a loading indicator while waiting for the allowance to update on-chain.
+
+## [0.1.37] - 2026-02-14
+
+### Fixed
+- Frontend approval flow now approves a max allowance (and first checks existing allowance) to avoid repeated approval transactions and fees for subsequent trades.
+
+## [0.1.36] - 2026-02-14
+
+### Changed
+- Solver prechecks are now disabled by default in `docker-compose.prod.yml` (`ENFORCE_PRECHECKS` defaults to `false`). Frontend still performs a best-effort balance/allowance precheck.
+
+### Fixed
+- Reverted frontend intent submission to send human-readable `amount_in` / `min_amount_out` strings (solver converts to base units during settlement).
+
+## [0.1.35] - 2026-02-14
+
+### Fixed
+- Frontend precheck copy: changed allowance error text to `Please approve the Dark Pool contract before submitting.`
+- Frontend precheck now uses a local token-decimals map (ETH/STRK=18, USDC/USDT=6) and shows human-readable balance/required amounts to make unit issues obvious.
+
+## [0.1.34] - 2026-02-14
+
+### Fixed
+- Frontend intent submission now converts `amount_in` / `min_amount_out` into base units using the correct token decimals before sending to the solver/on-chain settlement.
+  - Fixes cases like `0.1 ETH -> 10 STRK` settling as `0.00000000000000001 STRK` (treating `"10"` as 10 wei).
+
+## [0.1.33] - 2026-02-14
+
+### Fixed
+- Solver settlement nonce races: serialize on-chain settlement tx submissions and cache/reserve nonces (with retry on `NonceTooOld`), preventing intermittent `InvalidTransactionNonce` failures when multiple matches are settled close together.
+
+## [0.1.32] - 2026-02-14
+
+### Fixed
+- On-chain settlement calldata encoding: `amount_in` / `min_amount_out` are now consistently interpreted as **human token amounts** (not base units) and converted using the correct token decimals.
+  - Fixes cases like `0.01 ETH -> 10 STRK` where `"10"` was previously treated as 10 wei.
+  - Adds correct 6-decimal handling for USDC/USDT.
+
 ## [0.1.31] - 2026-02-14
 
 ### Security

@@ -1,6 +1,9 @@
 import { ApiClientError } from '../../lib/api-client';
 
 const ERROR_MESSAGES: Record<string, string> = {
+  INSUFFICIENT_ALLOWANCE: 'Please approve the Dark Pool contract before submitting.',
+  INSUFFICIENT_BALANCE: 'Insufficient token balance for amount_in.',
+  PRECHECK_RPC_ERROR: 'Unable to verify balance/allowance right now. Please try again.',
   INVALID_PROOF: 'ZK proof 無效，請重新生成後再提交。',
   INVALID_SIGNATURE: '交易簽名無效，請重新連接錢包後重試。',
   INVALID_INTENT_METADATA: '交易參數不完整，請重新填寫交易資料。',

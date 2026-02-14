@@ -1,5 +1,5 @@
 import { groth16 } from 'snarkjs';
-import { keccak256, toUtf8Bytes } from 'ethers';
+import { keccak256, parseUnits, toUtf8Bytes } from 'ethers';
 
 interface ProofInputs {
   user: string;
@@ -17,6 +17,25 @@ interface ProofOutput {
   public_inputs: string[];
 }
 
+function normalizeAddress(address: string): string {
+  const trimmed = address.trim().toLowerCase();
+  if (!trimmed.startsWith('0x')) return trimmed;
+  const hex = trimmed.slice(2).replace(/^0+/, '') || '0';
+  return `0x${hex.padStart(64, '0')}`;
+}
+
+const TOKEN_DECIMALS_BY_ADDRESS: Record<string, number> = {
+  // Starknet Sepolia common token addresses
+  [normalizeAddress('0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7')]: 18, // ETH
+  [normalizeAddress('0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d')]: 18, // STRK
+  [normalizeAddress('0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8')]: 6, // USDC
+  [normalizeAddress('0x068f5c6a61780768455de69077e07e89787839bf8166decfbf92b645209c0fb8')]: 6, // USDT
+};
+
+function tokenDecimals(address: string): number {
+  return TOKEN_DECIMALS_BY_ADDRESS[normalizeAddress(address)] ?? 18;
+}
+
 // Circuit file paths (would be hosted on CDN or loaded locally)
 const CIRCUIT_WASM_URL = '/circuits/intent_circuit.wasm';
 const CIRCUIT_ZKEY_URL = '/circuits/intent_circuit_final.zkey';
@@ -31,12 +50,17 @@ export const generateProof = async (inputs: ProofInputs): Promise<ProofOutput> =
   const salt = BigInt(Math.floor(Math.random() * 1000000000));
   
   // Create private inputs for the circuit
+  const inDecimals = tokenDecimals(inputs.tokenIn);
+  const outDecimals = tokenDecimals(inputs.tokenOut);
+  const amountInUnits = parseUnits(inputs.amountIn || '0', inDecimals);
+  const minAmountOutUnits = parseUnits(inputs.minAmountOut || '0', outDecimals);
+
   const circuitInputs = {
     user: BigInt(inputs.user),
     tokenIn: BigInt(inputs.tokenIn),
     tokenOut: BigInt(inputs.tokenOut),
-    amountIn: BigInt(parseFloat(inputs.amountIn) * 1e18), // Convert to wei
-    minAmountOut: BigInt(parseFloat(inputs.minAmountOut) * 1e18),
+    amountIn: amountInUnits,
+    minAmountOut: minAmountOutUnits,
     deadline: BigInt(inputs.deadline),
     salt: salt,
     // In production, these would be actual merkle proofs

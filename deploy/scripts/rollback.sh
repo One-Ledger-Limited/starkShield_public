@@ -17,6 +17,12 @@ else
   exit 1
 fi
 
+# Some environments have a non-writable $HOME (e.g. home owned by root).
+# Docker CLI writes config under $DOCKER_CONFIG (or $HOME/.docker by default),
+# so force it to a writable location to prevent failures during rollback builds.
+export DOCKER_CONFIG="${DOCKER_CONFIG:-/tmp/starkshield-docker-config}"
+mkdir -p "$DOCKER_CONFIG" || true
+
 LATEST_BACKUP="${1:-$(ls -1t backups/release-*.tar.gz 2>/dev/null | head -n 1)}"
 if [ -z "${LATEST_BACKUP:-}" ] || [ ! -f "$LATEST_BACKUP" ]; then
   echo "❌ No backup archive found. Pass backup path as first argument."

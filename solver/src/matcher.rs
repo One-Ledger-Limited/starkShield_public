@@ -7,6 +7,7 @@ use crate::config::MatchingConfig;
 use crate::models::{Intent, IntentStatus, MatchedPair, SettlementData};
 use crate::storage::RedisStorage;
 use crate::starknet::StarknetClient;
+use crate::starknet::{parse_amount_to_base_units, token_decimals_for};
 
 pub struct IntentMatcher {
     storage: Arc<RedisStorage>,
@@ -28,14 +29,25 @@ impl IntentMatcher {
     /// Main matching loop - runs continuously
     pub async fn run_matching_loop(&self) {
         let mut ticker = interval(Duration::from_millis(self.config.poll_interval_ms));
+        let settle_every_ticks: u64 = (10_000u64 / self.config.poll_interval_ms.max(1)).max(1);
+        let mut ticks: u64 = 0;
         
         info!("Starting intent matching loop");
         
         loop {
             ticker.tick().await;
+            ticks = ticks.wrapping_add(1);
             
             if let Err(e) = self.match_batch().await {
                 error!("Error in matching batch: {}", e);
+            }
+
+            // Retry settlement for already-matched pairs (e.g., allowance hasn't propagated yet).
+            // Throttle to avoid hammering the RPC provider every poll tick.
+            if self.auto_settle_onchain && (ticks % settle_every_ticks == 0) {
+                if let Err(e) = self.retry_unsettled_matches().await {
+                    warn!("Error retrying unsettled matches: {}", e);
+                }
             }
         }
     }
@@ -231,6 +243,16 @@ impl IntentMatcher {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("AUTO_SETTLE_ONCHAIN enabled but Starknet client is not configured"))?;
 
+            // Best-effort on-chain precheck to avoid submitting a settlement tx that will revert
+            // (most commonly due to insufficient balance/allowance).
+            if let Err(reason) = self.precheck_settlement(client, &matched_pair).await {
+                warn!(
+                    "Skipping auto-settlement for match {} due to precheck failure: {}",
+                    matched_pair.id, reason
+                );
+                return Ok(());
+            }
+
             match client.settle_match(&matched_pair).await {
                 Ok(tx_hash) => {
                     self.storage.update_intent_status(
@@ -245,6 +267,7 @@ impl IntentMatcher {
                         Some(intent_a.nullifier.clone()),
                         Some(tx_hash),
                     ).await?;
+                    self.storage.mark_match_settled(&matched_pair.id).await?;
                     info!("Auto-settled match {} on-chain", matched_pair.id);
                 }
                 Err(e) => {
@@ -277,6 +300,10 @@ impl IntentMatcher {
         );
         
         if let Some(client) = &self.starknet {
+            // Avoid submitting a tx that is guaranteed to revert due to missing approvals/balances.
+            if let Err(reason) = self.precheck_settlement(client, &pair).await {
+                return Err(anyhow::anyhow!(reason));
+            }
             let tx_hash = client.settle_match(&pair).await?;
             self.storage.update_intent_status(
                 &pair.intent_a.nullifier,
@@ -290,6 +317,10 @@ impl IntentMatcher {
                 Some(pair.intent_a.nullifier.clone()),
                 Some(tx_hash),
             ).await?;
+            // Remove from the "matched" set so the retry loop doesn't keep attempting it.
+            self.storage.mark_match_settled(&pair.id).await?;
+            // If this was previously failing (e.g., allowance propagation), clear backoff state.
+            let _ = self.storage.clear_match_retry_state(&pair.id).await;
             info!("Match {} settled successfully", pair.id);
             Ok(())
         } else {
@@ -310,5 +341,126 @@ impl IntentMatcher {
             "0x{:064x}",
             parse(token_a) ^ parse(token_b)
         )
+    }
+
+    async fn retry_unsettled_matches(&self) -> Result<()> {
+        if self.starknet.is_none() {
+            return Ok(());
+        }
+
+        let pairs = self.storage.get_unsettled_matches().await?;
+        if pairs.is_empty() {
+            return Ok(());
+        }
+
+        debug!("Retrying settlement for {} matched pairs", pairs.len());
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let is_funding_error = |msg: &str| {
+            msg.contains("INSUFFICIENT_BALANCE") || msg.contains("INSUFFICIENT_ALLOWANCE")
+        };
+
+        // Backoff after 3 consecutive failures:
+        // 3 -> 5m, 4 -> 10m, 5 -> 20m ... capped at 1h.
+        let compute_backoff_secs = |failures: u64| -> u64 {
+            if failures < 3 {
+                return 0;
+            }
+            let exp = (failures - 3).min(6);
+            (300u64).saturating_mul(1u64 << exp).min(3600)
+        };
+
+        for pair in pairs {
+            if let Ok(Some(state)) = self.storage.get_match_retry_state(&pair.id).await {
+                if state.next_retry_at_unix > now {
+                    debug!(
+                        "Skipping retry for match {} until {} (failures={})",
+                        pair.id, state.next_retry_at_unix, state.failures
+                    );
+                    continue;
+                }
+            }
+
+            // `settle_match` already runs the precheck, so this is safe to attempt.
+            if let Err(e) = self.settle_match(pair.clone()).await {
+                // Common case: allowances haven't updated yet. Keep it in the set for the next retry.
+                let msg = e.to_string();
+                if is_funding_error(&msg) {
+                    let current_failures = self
+                        .storage
+                        .get_match_retry_state(&pair.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|s| s.failures)
+                        .unwrap_or(0);
+                    let next_failures = current_failures + 1;
+                    let backoff = compute_backoff_secs(next_failures);
+                    let next_retry_at_unix = now.saturating_add(backoff);
+                    let _ = self.storage.bump_match_retry_state(&pair.id, next_retry_at_unix).await;
+                    if backoff > 0 {
+                        debug!(
+                            "Backoff enabled for match {} after {} failures; next retry in {}s",
+                            pair.id, next_failures, backoff
+                        );
+                    }
+                }
+                debug!("Retry settlement skipped/failed: {}", msg);
+            } else {
+                let _ = self.storage.clear_match_retry_state(&pair.id).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn precheck_settlement(&self, client: &Arc<StarknetClient>, pair: &MatchedPair) -> Result<(), String> {
+        // Check both users have enough balance and allowance for their token_in.
+        // Spender for transfer_from is the DarkPool contract itself.
+        let spender = client.dark_pool_address();
+
+        let a = &pair.intent_a.public_inputs;
+        let b = &pair.intent_b.public_inputs;
+
+        let a_decimals = token_decimals_for(&a.token_in);
+        let b_decimals = token_decimals_for(&b.token_in);
+        let a_required = parse_amount_to_base_units(&a.amount_in, a_decimals).map_err(|e| e.to_string())?;
+        let b_required = parse_amount_to_base_units(&b.amount_in, b_decimals).map_err(|e| e.to_string())?;
+
+        let a_bal = client.erc20_balance_of(&a.token_in, &a.user).await.map_err(|e| e.to_string())?;
+        let a_allow = client.erc20_allowance(&a.token_in, &a.user, spender).await.map_err(|e| e.to_string())?;
+        if a_bal < a_required {
+            return Err(format!(
+                "INSUFFICIENT_BALANCE user={} token_in={} balance={} required={}",
+                a.user, a.token_in, a_bal, a_required
+            ));
+        }
+        if a_allow < a_required {
+            return Err(format!(
+                "INSUFFICIENT_ALLOWANCE user={} token_in={} allowance={} required={} spender=0x{:x}",
+                a.user, a.token_in, a_allow, a_required, spender
+            ));
+        }
+
+        let b_bal = client.erc20_balance_of(&b.token_in, &b.user).await.map_err(|e| e.to_string())?;
+        let b_allow = client.erc20_allowance(&b.token_in, &b.user, spender).await.map_err(|e| e.to_string())?;
+        if b_bal < b_required {
+            return Err(format!(
+                "INSUFFICIENT_BALANCE user={} token_in={} balance={} required={}",
+                b.user, b.token_in, b_bal, b_required
+            ));
+        }
+        if b_allow < b_required {
+            return Err(format!(
+                "INSUFFICIENT_ALLOWANCE user={} token_in={} allowance={} required={} spender=0x{:x}",
+                b.user, b.token_in, b_allow, b_required, spender
+            ));
+        }
+
+        Ok(())
     }
 }
