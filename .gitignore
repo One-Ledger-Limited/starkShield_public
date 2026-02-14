@@ -1,0 +1,30 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+*.secret
+secrets/
+
+# Logs / runtime state
+logs/
+*.log
+
+# Node
+**/node_modules/
+**/dist/
+**/.vite/
+
+# Rust
+**/target/
+
+# Test artifacts
+coverage/
+
+# Deployment artifacts
+backups/

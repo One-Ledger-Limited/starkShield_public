@@ -1,0 +1,25 @@
+[package]
+name = "starkshield_contracts"
+version = "0.1.0"
+edition = "2023_11"
+
+# See more keys and their definitions at https://docs.swmansion.com/scarb/docs/reference/manifest.html
+
+[dependencies]
+starknet = ">=2.6.0"
+# Hackathon/MVP: avoid large dependency graph that can break across Cairo versions.
+# DarkPool uses a minimal local ERC20 interface; IntentVerifier is a placeholder verifier.
+
+[[target.starknet-contract]]
+sierra = true
+casm = true
+
+[tool.scarb]
+allow-prebuilt-plugins = []
+
+[scripts]
+test = "snforge test"
+
+[dev-dependencies]
+snforge_std = { git = "https://github.com/foundry-rs/starknet-foundry", tag = "v0.27.0" }
+assert_macros = "2.6.0"

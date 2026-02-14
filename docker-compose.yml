@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  solver:
+    build:
+      context: ./solver
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - STARKNET_RPC=${STARKNET_RPC}
+      - DARK_POOL_ADDRESS=${DARK_POOL_ADDRESS}
+      - SOLVER_PRIVATE_KEY=${SOLVER_PRIVATE_KEY}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./solver/.env:/app/.env:ro
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_SOLVER_URL=http://localhost:8080
+      - VITE_STARKNET_RPC=${STARKNET_RPC}
+      - VITE_DARK_POOL_ADDRESS=${DARK_POOL_ADDRESS}
+    depends_on:
+      - solver
+    restart: unless-stopped
+
+  devnet:
+    image: shardlabs/starknet-devnet:latest
+    ports:
+      - "5050:5050"
+    command: --seed 0 --fork-network alpha-sepolia
+    volumes:
+      - devnet_data:/data
+
+volumes:
+  redis_data:
+  devnet_data:

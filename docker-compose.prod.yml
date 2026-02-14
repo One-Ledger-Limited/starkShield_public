@@ -1,0 +1,123 @@
+# Production Docker Compose Configuration
+# Optimized for server deployment
+
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: starkshield-redis
+    restart: unless-stopped
+    stop_grace_period: 30s
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - starkshield-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  solver:
+    build:
+      context: ./solver
+      dockerfile: Dockerfile
+    container_name: starkshield-solver
+    restart: unless-stopped
+    ports:
+      - "${SOLVER_HOST_PORT:-18080}:8080"
+    environment:
+      - RUST_LOG=info
+      - REDIS_URL=redis://redis:6379
+      - STARKNET_RPC=${STARKNET_RPC}
+      # Pragma Summary Stats contract address (used for TWAP calculations).
+      - PRAGMA_SUMMARY_STATS_ADDRESS=${PRAGMA_SUMMARY_STATS_ADDRESS}
+      - DARK_POOL_ADDRESS=${DARK_POOL_ADDRESS}
+      - SOLVER_ADDRESS=${SOLVER_ADDRESS}
+      - SOLVER_PRIVATE_KEY=${SOLVER_PRIVATE_KEY}
+      - AUTO_SETTLE_ONCHAIN=${AUTO_SETTLE_ONCHAIN:-false}
+      - MIN_MATCH_AMOUNT_USD=${MIN_MATCH_AMOUNT_USD:-100}
+      - MAX_SLIPPAGE_BPS=${MAX_SLIPPAGE_BPS:-50}
+      - MATCH_TIMEOUT_SECONDS=${MATCH_TIMEOUT_SECONDS:-300}
+      - BATCH_SIZE=${BATCH_SIZE:-10}
+      - POLL_INTERVAL_MS=${POLL_INTERVAL_MS:-1000}
+      - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
+      - JWT_SECRET=${JWT_SECRET}
+      - AUTH_USERNAME=${AUTH_USERNAME:-admin}
+      - AUTH_PASSWORD=${AUTH_PASSWORD}
+      - ENFORCE_PRECHECKS=${ENFORCE_PRECHECKS:-true}
+      - RATE_LIMIT_RPM=${RATE_LIMIT_RPM:-60}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - starkshield-network
+    volumes:
+      - ./logs:/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Prefer same-origin (`/api`) in production (frontend container proxies `/api` -> solver).
+        - VITE_SOLVER_URL=${VITE_SOLVER_URL:-}
+        - VITE_SOLVER_API_URL=${VITE_SOLVER_API_URL:-}
+        - VITE_STARKNET_RPC=${VITE_STARKNET_RPC}
+        - VITE_DARK_POOL_ADDRESS=${VITE_DARK_POOL_ADDRESS}
+        - VITE_REQUIRE_LOGIN=${VITE_REQUIRE_LOGIN:-false}
+    container_name: starkshield-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_HOST_PORT:-15173}:80"
+    environment:
+      - VITE_SOLVER_URL=${VITE_SOLVER_URL:-}
+      - VITE_SOLVER_API_URL=${VITE_SOLVER_API_URL:-}
+      - VITE_STARKNET_RPC=${VITE_STARKNET_RPC}
+      - VITE_DARK_POOL_ADDRESS=${VITE_DARK_POOL_ADDRESS}
+      - VITE_REQUIRE_LOGIN=${VITE_REQUIRE_LOGIN:-false}
+      - SOLVER_INTERNAL_URL=http://solver:8080
+    depends_on:
+      - solver
+    networks:
+      - starkshield-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+  # Optional: Add nginx reverse proxy for production
+  nginx:
+    image: nginx:alpine
+    container_name: starkshield-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - solver
+    networks:
+      - starkshield-network
+    profiles:
+      - production
+
+networks:
+  starkshield-network:
+    driver: bridge
+
+volumes:
+  redis_data:
