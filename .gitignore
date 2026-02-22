@@ -3,6 +3,9 @@
 .idea/
 .vscode/
 
+# Local-only AI agent guidance (do not publish)
+.github/copilot-instructions.md
+
 # Environment / secrets
 .env
 .env.*
