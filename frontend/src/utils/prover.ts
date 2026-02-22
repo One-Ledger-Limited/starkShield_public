@@ -60,11 +60,29 @@ function toHexFelt(value: bigint): string {
   return `0x${value.toString(16)}`;
 }
 
-function feltToHex(value: string | number | bigint): string {
-  if (typeof value === 'string') {
-    return value.startsWith('0x') ? value : `0x${BigInt(value).toString(16)}`;
-  }
-  return `0x${BigInt(value).toString(16)}`;
+function toBigIntValue(value: string | number | bigint): bigint {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return BigInt(value);
+  if (value.startsWith('0x') || value.startsWith('0X')) return BigInt(value);
+  return BigInt(value);
+}
+
+function parseG1Point(point: unknown): { x: bigint; y: bigint; curveId: CurveId } {
+  const p = point as Array<string | number | bigint>;
+  return {
+    x: toBigIntValue(p[0]),
+    y: toBigIntValue(p[1]),
+    curveId: CurveId.BN254,
+  };
+}
+
+function parseG2Point(point: unknown): { x: [bigint, bigint]; y: [bigint, bigint]; curveId: CurveId } {
+  const p = point as Array<Array<string | number | bigint>>;
+  return {
+    x: [toBigIntValue(p[0][0]), toBigIntValue(p[0][1])],
+    y: [toBigIntValue(p[1][0]), toBigIntValue(p[1][1])],
+    curveId: CurveId.BN254,
+  };
 }
 
 async function ensureGaragaInitialized(): Promise<void> {
@@ -153,52 +171,27 @@ export const generateProof = async (inputs: ProofInputs): Promise<ProofOutput> =
   if (!vkResponse.ok) {
     throw new Error(`Verification key not found at ${VERIFICATION_KEY_URL} (HTTP ${vkResponse.status})`);
   }
-  const verificationKey = await vkResponse.json();
+  const verificationKeyJson = await vkResponse.json();
+  const garagaProof = {
+    a: parseG1Point(proof.pi_a),
+    b: parseG2Point(proof.pi_b),
+    c: parseG1Point(proof.pi_c),
+    publicInputs: publicSignals.map((v) => toBigIntValue(v)),
+    curveId: CurveId.BN254,
+  };
+  const garagaVerificationKey = {
+    alpha: parseG1Point(verificationKeyJson.vk_alpha_1),
+    beta: parseG2Point(verificationKeyJson.vk_beta_2),
+    gamma: parseG2Point(verificationKeyJson.vk_gamma_2),
+    delta: parseG2Point(verificationKeyJson.vk_delta_2),
+    ic: (verificationKeyJson.IC as Array<unknown>).map(parseG1Point),
+  };
 
-  const garagaPayloadCandidates: unknown[] = [
-    // Candidate 1: snarkjs-style proof with explicit public inputs.
-    {
-      ...proof,
-      publicInputs: publicSignals,
-      public_inputs: publicSignals,
-    },
-    // Candidate 2: Garaga docs-style wrapper.
-    {
-      eliptic_curve_id: 'bn254',
-      elliptic_curve_id: 'bn254',
-      proof: {
-        a: {
-          x: feltToHex(proof.pi_a[0]),
-          y: feltToHex(proof.pi_a[1]),
-        },
-        b: {
-          x: [feltToHex(proof.pi_b[0][0]), feltToHex(proof.pi_b[0][1])],
-          y: [feltToHex(proof.pi_b[1][0]), feltToHex(proof.pi_b[1][1])],
-        },
-        c: {
-          x: feltToHex(proof.pi_c[0]),
-          y: feltToHex(proof.pi_c[1]),
-        },
-      },
-      public_inputs: publicSignals.map((v) => feltToHex(v)),
-      publicInputs: publicSignals.map((v) => feltToHex(v)),
-    },
-  ];
-
-  let garagaCalldata: Array<bigint | string | number> | null = null;
-  let lastGaragaError: unknown = null;
-  for (const payload of garagaPayloadCandidates) {
-    try {
-      garagaCalldata = await getGroth16CallData(payload, verificationKey, CurveId.BN254);
-      if (Array.isArray(garagaCalldata) && garagaCalldata.length > 0) {
-        break;
-      }
-    } catch (err) {
-      lastGaragaError = err;
-    }
-  }
-  if (!garagaCalldata || garagaCalldata.length === 0) {
-    throw new Error(`Failed to build Garaga proof calldata: ${String(lastGaragaError)}`);
+  let garagaCalldata: Array<bigint | string | number>;
+  try {
+    garagaCalldata = await getGroth16CallData(garagaProof, garagaVerificationKey, CurveId.BN254);
+  } catch (err) {
+    throw new Error(`Failed to build Garaga proof calldata: ${String(err)}`);
   }
   const proofData = garagaCalldata.map((x) => BigInt(x).toString());
 

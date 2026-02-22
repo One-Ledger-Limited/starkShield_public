@@ -19,6 +19,7 @@
 - Fixed browser runtime error `Buffer is not defined` during ZK proof generation by adding Vite node polyfills and explicit `globalThis.Buffer` initialization.
 - Fixed matcher compatibility checks for decimal amounts (`0.1`, etc.) by comparing base-unit values from `proof_public_inputs` (with backward-compatible fallback parsing), preventing valid reciprocal intents from staying indefinitely pending.
 - Updated frontend proof submission to send Garaga `full_proof_with_hints` calldata (instead of only 8 Groth16 coordinates), aligning with generated verifier input requirements and resolving on-chain `Invalid proofs` rejections.
+- Corrected Garaga proof/vk object mapping to official `Groth16Proof` / `Groth16VerifyingKey` shapes (with BN254 `curveId` and bigint coordinates), fixing `Failed to parse G1PointBigUint` during proof creation.
 
 ## [0.1.45] - 2026-02-22
 
