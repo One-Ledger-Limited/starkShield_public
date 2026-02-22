@@ -37,8 +37,17 @@ fi
 
 mkdir -p backups
 BACKUP_FILE="backups/release-$(date +%Y%m%d%H%M%S).tar.gz"
-tar -czf "$BACKUP_FILE" "$COMPOSE_FILE" .env deploy.sh update.sh backup.sh 2>/dev/null || true
+tar -czf "$BACKUP_FILE" "$COMPOSE_FILE" .env deploy.sh update.sh backup.sh VERSION RELEASE_VERSION 2>/dev/null || true
 echo "💾 Backup created: $BACKUP_FILE"
+
+# Record deployed version (for audit/rollback traceability).
+# `auto-deploy.sh` writes RELEASE_VERSION; fall back to timestamp if missing.
+if [ -f "RELEASE_VERSION" ]; then
+  cp -f RELEASE_VERSION VERSION
+else
+  echo "unknown-$(date +%Y%m%d%H%M%S)" > VERSION
+fi
+echo "🏷️  Deploy version: $(cat VERSION 2>/dev/null || true)"
 
 echo "🛑 Stopping existing containers..."
 $COMPOSE_CMD -f "$COMPOSE_FILE" down --remove-orphans || true

@@ -8,7 +8,7 @@ echo "====================================="
 SERVER_HOST="${SERVER_HOST:-${SERVER_IP:-}}"
 USERNAME="${USERNAME:-}"
 REMOTE_DIR="${REMOTE_DIR:-/vol2/develop/starkshield}"
-SSH_KEY_PATH="${SSH_KEY_PATH:-$HOME/.ssh/id_rsa}"
+SSH_KEY_PATH="${SSH_KEY_PATH:-}"
 LOCAL_DIR="${LOCAL_DIR:-$(pwd)}"
 RSYNC_DELETE="${RSYNC_DELETE:-0}"
 RSYNC_DRYRUN="${RSYNC_DRYRUN:-0}"
@@ -21,10 +21,14 @@ if [ -z "${SERVER_HOST}" ] || [ -z "${USERNAME}" ]; then
   exit 1
 fi
 
-if [ ! -f "$SSH_KEY_PATH" ]; then
-  echo "❌ SSH key not found: $SSH_KEY_PATH"
-  echo "Set SSH_KEY_PATH or provision key-based login first."
-  exit 1
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new)
+if [ -n "${SSH_KEY_PATH}" ]; then
+  if [ ! -f "$SSH_KEY_PATH" ]; then
+    echo "❌ SSH key not found: $SSH_KEY_PATH"
+    echo "Set SSH_KEY_PATH to a valid key file, or leave it empty to use your SSH config/agent."
+    exit 1
+  fi
+  SSH_OPTS+=(-i "$SSH_KEY_PATH")
 fi
 
 if [ ! -f "$LOCAL_DIR/docker-compose.prod.yml" ]; then
@@ -33,7 +37,14 @@ if [ ! -f "$LOCAL_DIR/docker-compose.prod.yml" ]; then
 fi
 
 REMOTE="$USERNAME@$SERVER_HOST"
-RSYNC_SSH="ssh -i $SSH_KEY_PATH -o StrictHostKeyChecking=accept-new"
+RSYNC_SSH="ssh ${SSH_OPTS[*]}"
+
+# Build a deploy version string from git if available.
+GIT_SHA=""
+if command -v git >/dev/null 2>&1 && git -C "$LOCAL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  GIT_SHA="$(git -C "$LOCAL_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+fi
+DEPLOY_VERSION="${DEPLOY_VERSION:-${GIT_SHA:-unknown}-$(date +%Y%m%d%H%M%S)}"
 
 echo "📦 Syncing project files..."
 RSYNC_FLAGS=( -avz )
@@ -67,23 +78,27 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "$REMOTE" \
   "cd $REMOTE_DIR && chmod +x deploy.sh update.sh backup.sh deploy/scripts/*.sh 2>/dev/null || true"
 
 echo "💾 Creating remote backup..."
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "$REMOTE" \
+ssh "${SSH_OPTS[@]}" "$REMOTE" \
   "cd $REMOTE_DIR && mkdir -p backups && ts=\$(date +%Y%m%d%H%M%S) && tar -czf backups/predeploy-\$ts.tar.gz docker-compose.prod.yml .env deploy.sh update.sh backup.sh 2>/dev/null || true"
 
+echo "🏷️  Writing release version on remote: $DEPLOY_VERSION"
+ssh "${SSH_OPTS[@]}" "$REMOTE" \
+  "cd $REMOTE_DIR && echo '$DEPLOY_VERSION' > RELEASE_VERSION"
+
 echo "🚀 Deploying containers..."
-if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "$REMOTE" \
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE" \
   "cd $REMOTE_DIR && bash deploy.sh"; then
   echo "❌ Deployment failed — attempting rollback..."
-  ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "$REMOTE" \
+  ssh "${SSH_OPTS[@]}" "$REMOTE" \
     "cd $REMOTE_DIR && bash deploy/scripts/rollback.sh" || true
   exit 1
 fi
 
 echo "🔎 Verifying deployment (explicit)..."
-if ! ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "$REMOTE" \
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE" \
   "cd $REMOTE_DIR && bash deploy/scripts/verify-prod.sh"; then
   echo "❌ Verification failed — attempting rollback..."
-  ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "$REMOTE" \
+  ssh "${SSH_OPTS[@]}" "$REMOTE" \
     "cd $REMOTE_DIR && bash deploy/scripts/rollback.sh" || true
   exit 1
 fi

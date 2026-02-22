@@ -10,6 +10,10 @@ FRONTEND_HOST_PORT="${FRONTEND_HOST_PORT:-15173}"
 
 cd "$DEPLOY_DIR"
 
+if [ -f "VERSION" ]; then
+  echo "🏷️  Deployed version: $(cat VERSION 2>/dev/null || true)"
+fi
+
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then
