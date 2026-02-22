@@ -1,7 +1,7 @@
 import { groth16 } from 'snarkjs';
 import { parseUnits } from 'ethers';
 import { buildPoseidon } from 'circomlibjs';
-import { CurveId, getGroth16CallData, init as initGaraga } from 'garaga';
+import { CurveId, getGroth16CallData, get_groth16_calldata, init as initGaraga } from 'garaga';
 
 interface ProofInputs {
   user: string;
@@ -172,28 +172,60 @@ export const generateProof = async (inputs: ProofInputs): Promise<ProofOutput> =
     throw new Error(`Verification key not found at ${VERIFICATION_KEY_URL} (HTTP ${vkResponse.status})`);
   }
   const verificationKeyJson = await vkResponse.json();
-  const garagaProof = {
-    a: parseG1Point(proof.pi_a),
-    b: parseG2Point(proof.pi_b),
-    c: parseG1Point(proof.pi_c),
-    publicInputs: publicSignals.map((v) => toBigIntValue(v)),
-    curveId: CurveId.BN254,
-  };
-  const garagaVerificationKey = {
-    alpha: parseG1Point(verificationKeyJson.vk_alpha_1),
-    beta: parseG2Point(verificationKeyJson.vk_beta_2),
-    gamma: parseG2Point(verificationKeyJson.vk_gamma_2),
-    delta: parseG2Point(verificationKeyJson.vk_delta_2),
-    ic: (verificationKeyJson.IC as Array<unknown>).map(parseG1Point),
-  };
 
-  let garagaCalldata: Array<bigint | string | number>;
+  let garagaCalldata: Array<bigint | string | number> | null = null;
+  let lastError: unknown = null;
+
+  // Path A (preferred): pass snarkjs-shaped objects to Garaga wasm parser directly.
+  // This avoids manual field remapping/order mistakes.
   try {
-    garagaCalldata = await getGroth16CallData(garagaProof, garagaVerificationKey, CurveId.BN254);
+    const proofJs = {
+      ...proof,
+      publicSignals,
+      public_inputs: publicSignals,
+      publicInputs: publicSignals,
+    };
+    garagaCalldata = get_groth16_calldata(proofJs, verificationKeyJson, CurveId.BN254);
   } catch (err) {
-    throw new Error(`Failed to build Garaga proof calldata: ${String(err)}`);
+    lastError = err;
   }
-  const proofData = garagaCalldata.map((x) => BigInt(x).toString());
+
+  // Path B fallback: typed high-level API mapping.
+  if (!garagaCalldata || garagaCalldata.length === 0) {
+    try {
+      const garagaProof = {
+        a: parseG1Point(proof.pi_a),
+        b: parseG2Point(proof.pi_b),
+        c: parseG1Point(proof.pi_c),
+        publicInputs: publicSignals.map((v) => toBigIntValue(v)),
+        curveId: CurveId.BN254,
+      };
+      const garagaVerificationKey = {
+        alpha: parseG1Point(verificationKeyJson.vk_alpha_1),
+        beta: parseG2Point(verificationKeyJson.vk_beta_2),
+        gamma: parseG2Point(verificationKeyJson.vk_gamma_2),
+        delta: parseG2Point(verificationKeyJson.vk_delta_2),
+        ic: (verificationKeyJson.IC as Array<unknown>).map(parseG1Point),
+      };
+      garagaCalldata = await getGroth16CallData(garagaProof, garagaVerificationKey, CurveId.BN254);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  if (!garagaCalldata || garagaCalldata.length === 0) {
+    throw new Error(`Failed to build Garaga proof calldata: ${String(lastError)}`);
+  }
+  let normalizedCalldata = garagaCalldata;
+  // Garaga helpers may return a "felt-array serialized" payload where the first felt
+  // is the array length. Our contract already receives `Span<felt252>`, so keep raw body only.
+  if (normalizedCalldata.length > 1) {
+    const first = toBigIntValue(normalizedCalldata[0] as string | number | bigint);
+    if (first === BigInt(normalizedCalldata.length - 1)) {
+      normalizedCalldata = normalizedCalldata.slice(1);
+    }
+  }
+  const proofData = normalizedCalldata.map((x) => BigInt(x).toString());
 
   // Public inputs that will be visible on-chain
   const publicInputs = [
