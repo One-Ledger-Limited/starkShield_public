@@ -9,7 +9,7 @@
 - [Architecture Overview](./architecture.md)
 - [Getting Started Guide](./getting-started.md)
 - [API Documentation](./api.md)
-- [Security](./security.md)
+- [Security](../SECURITY.md)
 
 ### Project Structure
 
