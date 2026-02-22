@@ -2,6 +2,8 @@ use anyhow::Result;
 use std::sync::Arc;
 use tracing::{info, debug, warn, error};
 use tokio::time::{interval, Duration};
+use num_bigint::BigUint;
+use std::str::FromStr;
 
 use crate::config::MatchingConfig;
 use crate::models::{Intent, IntentStatus, MatchedPair, SettlementData};
@@ -156,22 +158,22 @@ impl IntentMatcher {
         
         // Check amount compatibility
         // A's input should satisfy B's minimum output
-        let amount_a_in = match a.public_inputs.amount_in.parse::<f64>() {
+        let amount_a_in = match BigUint::from_str(&a.public_inputs.amount_in) {
             Ok(v) => v,
             Err(_) => return false,
         };
         
-        let min_b_out = match b.public_inputs.min_amount_out.parse::<f64>() {
+        let min_b_out = match BigUint::from_str(&b.public_inputs.min_amount_out) {
             Ok(v) => v,
             Err(_) => return false,
         };
         
-        let amount_b_in = match b.public_inputs.amount_in.parse::<f64>() {
+        let amount_b_in = match BigUint::from_str(&b.public_inputs.amount_in) {
             Ok(v) => v,
             Err(_) => return false,
         };
         
-        let min_a_out = match a.public_inputs.min_amount_out.parse::<f64>() {
+        let min_a_out = match BigUint::from_str(&a.public_inputs.min_amount_out) {
             Ok(v) => v,
             Err(_) => return false,
         };
@@ -195,11 +197,27 @@ impl IntentMatcher {
     }
 
     fn compatibility_surplus(&self, a: &Intent, b: &Intent) -> f64 {
-        let amount_a_in = a.public_inputs.amount_in.parse::<f64>().unwrap_or(0.0);
-        let min_b_out = b.public_inputs.min_amount_out.parse::<f64>().unwrap_or(0.0);
-        let amount_b_in = b.public_inputs.amount_in.parse::<f64>().unwrap_or(0.0);
-        let min_a_out = a.public_inputs.min_amount_out.parse::<f64>().unwrap_or(0.0);
-        (amount_a_in - min_b_out) + (amount_b_in - min_a_out)
+        // Calculate surplus using BigUint, convert to f64 for sorting only
+        let amount_a_in = BigUint::from_str(&a.public_inputs.amount_in).unwrap_or_default();
+        let min_b_out = BigUint::from_str(&b.public_inputs.min_amount_out).unwrap_or_default();
+        let amount_b_in = BigUint::from_str(&b.public_inputs.amount_in).unwrap_or_default();
+        let min_a_out = BigUint::from_str(&a.public_inputs.min_amount_out).unwrap_or_default();
+        
+        let surplus_a = if amount_a_in >= min_b_out {
+            &amount_a_in - &min_b_out
+        } else {
+            BigUint::from(0u32)
+        };
+        
+        let surplus_b = if amount_b_in >= min_a_out {
+            &amount_b_in - &min_a_out
+        } else {
+            BigUint::from(0u32)
+        };
+        
+        // Convert to f64 for sorting (precision loss acceptable for ranking)
+        let total_surplus = surplus_a + surplus_b;
+        total_surplus.to_string().parse::<f64>().unwrap_or(0.0)
     }
 
     /// Create a match between two compatible intents

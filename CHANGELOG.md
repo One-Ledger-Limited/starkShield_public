@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.45] - 2026-02-22
+
+### Security
+- **CRITICAL**: Fixed `cancel_intent` access control - now properly verifies caller is the intent owner
+- Added intent owner storage to track who submitted each intent
+- Implemented proper `pause/unpause` functionality with state checks in `submit_intent` and `settle_match`
+
+### Fixed
+- Matcher now uses `BigUint` for amount comparisons instead of `f64`, eliminating floating-point precision issues in large trades
+- Improved surplus calculation accuracy for matched pairs
+
+### Changed
+- Contract storage now includes `intent_owners` mapping and `paused` flag
+- Enhanced contract initialization to set `paused = false` by default
+
 ## [0.1.42] - 2026-02-14
 
 ### Fixed

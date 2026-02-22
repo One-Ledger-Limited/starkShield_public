@@ -79,9 +79,11 @@ mod DarkPool {
         // Store status as u8 to avoid enum store edge cases when reading unset keys.
         // 0=Pending, 1=Settled, 2=Cancelled, 3=Expired.
         intents: LegacyMap<felt252, u8>,
+        intent_owners: LegacyMap<felt252, ContractAddress>,
         user_intents: LegacyMap<ContractAddress, felt252>,
         fee_recipient: ContractAddress,
         protocol_fee_bps: u16,
+        paused: bool,
     }
 
     #[event]
@@ -139,11 +141,15 @@ mod DarkPool {
         self.ekubo_router.write(ekubo_router);
         self.fee_recipient.write(fee_recipient);
         self.protocol_fee_bps.write(protocol_fee_bps);
+        self.paused.write(false);
     }
 
     #[abi(embed_v0)]
     impl DarkPoolImpl of super::IDarkPool<ContractState> {
         fn submit_intent(ref self: ContractState, proof: IntentProof) {
+            // Check not paused
+            assert(!self.paused.read(), 'Contract is paused');
+            
             // Check intent not already submitted
             let current_status = self._read_status(proof.nullifier);
             assert(current_status == IntentStatus::Pending, 'Intent already exists');
@@ -162,7 +168,8 @@ mod DarkPool {
             
             assert(is_valid, 'Invalid proof');
             
-            // Mark intent as pending
+            // Store intent owner and mark as pending
+            self.intent_owners.write(proof.nullifier, get_caller_address());
             self._write_status(proof.nullifier, IntentStatus::Pending);
             
             // Emit event
@@ -189,6 +196,9 @@ mod DarkPool {
             intent_b: IntentProof,
             settlement_data: SettlementData
         ) {
+            // Check not paused
+            assert(!self.paused.read(), 'Contract is paused');
+            
             // Only solver can settle
             self._assert_solver();
             
@@ -256,7 +266,10 @@ mod DarkPool {
 
         fn cancel_intent(ref self: ContractState, nullifier: felt252) {
             // Only intent owner can cancel
-            // Note: In production, would verify ownership via stored intent data
+            let owner = self.intent_owners.read(nullifier);
+            let caller = get_caller_address();
+            assert(owner == caller, 'Not intent owner');
+            
             let current_status = self._read_status(nullifier);
             assert(current_status == IntentStatus::Pending, 'Intent not pending');
             
@@ -409,12 +422,14 @@ mod DarkPool {
 
         fn pause(ref self: ContractState) {
             self._assert_owner();
-            // Implement pause logic
+            assert(!self.paused.read(), 'Already paused');
+            self.paused.write(true);
         }
 
         fn unpause(ref self: ContractState) {
             self._assert_owner();
-            // Implement unpause logic
+            assert(self.paused.read(), 'Not paused');
+            self.paused.write(false);
         }
     }
 
