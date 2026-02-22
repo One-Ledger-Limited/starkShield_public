@@ -1,7 +1,7 @@
 import { groth16 } from 'snarkjs';
 import { parseUnits } from 'ethers';
 import { buildPoseidon } from 'circomlibjs';
-import { CurveId, getGroth16CallData, get_groth16_calldata, init as initGaraga } from 'garaga';
+import { CurveId, getGroth16CallData, init as initGaraga } from 'garaga';
 
 interface ProofInputs {
   user: string;
@@ -78,9 +78,11 @@ function parseG1Point(point: unknown): { x: bigint; y: bigint; curveId: CurveId 
 
 function parseG2Point(point: unknown): { x: [bigint, bigint]; y: [bigint, bigint]; curveId: CurveId } {
   const p = point as Array<Array<string | number | bigint>>;
+  // snarkjs emits G2 coordinates as [[x1, x0], [y1, y0]].
+  // Garaga typed API expects canonical [x0, x1], [y0, y1].
   return {
-    x: [toBigIntValue(p[0][0]), toBigIntValue(p[0][1])],
-    y: [toBigIntValue(p[1][0]), toBigIntValue(p[1][1])],
+    x: [toBigIntValue(p[0][1]), toBigIntValue(p[0][0])],
+    y: [toBigIntValue(p[1][1]), toBigIntValue(p[1][0])],
     curveId: CurveId.BN254,
   };
 }
@@ -175,42 +177,24 @@ export const generateProof = async (inputs: ProofInputs): Promise<ProofOutput> =
 
   let garagaCalldata: Array<bigint | string | number> | null = null;
   let lastError: unknown = null;
-
-  // Path A (preferred): pass snarkjs-shaped objects to Garaga wasm parser directly.
-  // This avoids manual field remapping/order mistakes.
   try {
-    const proofJs = {
-      ...proof,
-      publicSignals,
-      public_inputs: publicSignals,
-      publicInputs: publicSignals,
+    const garagaProof = {
+      a: parseG1Point(proof.pi_a),
+      b: parseG2Point(proof.pi_b),
+      c: parseG1Point(proof.pi_c),
+      publicInputs: publicSignals.map((v) => toBigIntValue(v)),
+      curveId: CurveId.BN254,
     };
-    garagaCalldata = get_groth16_calldata(proofJs, verificationKeyJson, CurveId.BN254);
+    const garagaVerificationKey = {
+      alpha: parseG1Point(verificationKeyJson.vk_alpha_1),
+      beta: parseG2Point(verificationKeyJson.vk_beta_2),
+      gamma: parseG2Point(verificationKeyJson.vk_gamma_2),
+      delta: parseG2Point(verificationKeyJson.vk_delta_2),
+      ic: (verificationKeyJson.IC as Array<unknown>).map(parseG1Point),
+    };
+    garagaCalldata = await getGroth16CallData(garagaProof, garagaVerificationKey, CurveId.BN254);
   } catch (err) {
     lastError = err;
-  }
-
-  // Path B fallback: typed high-level API mapping.
-  if (!garagaCalldata || garagaCalldata.length === 0) {
-    try {
-      const garagaProof = {
-        a: parseG1Point(proof.pi_a),
-        b: parseG2Point(proof.pi_b),
-        c: parseG1Point(proof.pi_c),
-        publicInputs: publicSignals.map((v) => toBigIntValue(v)),
-        curveId: CurveId.BN254,
-      };
-      const garagaVerificationKey = {
-        alpha: parseG1Point(verificationKeyJson.vk_alpha_1),
-        beta: parseG2Point(verificationKeyJson.vk_beta_2),
-        gamma: parseG2Point(verificationKeyJson.vk_gamma_2),
-        delta: parseG2Point(verificationKeyJson.vk_delta_2),
-        ic: (verificationKeyJson.IC as Array<unknown>).map(parseG1Point),
-      };
-      garagaCalldata = await getGroth16CallData(garagaProof, garagaVerificationKey, CurveId.BN254);
-    } catch (err) {
-      lastError = err;
-    }
   }
 
   if (!garagaCalldata || garagaCalldata.length === 0) {
