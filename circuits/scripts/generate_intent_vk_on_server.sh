@@ -25,10 +25,11 @@ docker run --rm \
   node:18-bullseye bash -lc "npm install --no-audit --no-fund"
 
 echo "🐳 Building circom from source (one-time)"
+# Build in bullseye to match the node:18-bullseye runtime glibc.
 if [ ! -x "$CIRCUITS_DIR/tooling/circom" ]; then
   docker run --rm \
     -v "$ROOT_DIR":/work -w /work \
-    rust:1.88 bash -lc "set -e; export PATH=/usr/local/cargo/bin:\$PATH; apt-get update; apt-get install -y git build-essential pkg-config libssl-dev; rm -rf /var/lib/apt/lists/*; cd /tmp; git clone --depth 1 --branch ${CIRCOM_TAG} https://github.com/iden3/circom.git; cd circom; cargo build --release; cp -f target/release/circom /work/circuits/tooling/circom; chmod +x /work/circuits/tooling/circom"
+    rust:1.88-bullseye bash -lc "set -e; export PATH=/usr/local/cargo/bin:\$PATH; apt-get update; apt-get install -y git build-essential pkg-config libssl-dev; rm -rf /var/lib/apt/lists/*; cd /tmp; git clone --depth 1 --branch ${CIRCOM_TAG} https://github.com/iden3/circom.git; cd circom; cargo build --release; cp -f target/release/circom /work/circuits/tooling/circom; chmod +x /work/circuits/tooling/circom"
 fi
 
 echo "🧩 Compiling intent circuit"
