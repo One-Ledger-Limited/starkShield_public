@@ -1,6 +1,7 @@
 import { groth16 } from 'snarkjs';
 import { parseUnits } from 'ethers';
 import { buildPoseidon } from 'circomlibjs';
+import { CurveId, getGroth16CallData, init as initGaraga } from 'garaga';
 
 interface ProofInputs {
   user: string;
@@ -46,6 +47,7 @@ const VERIFICATION_KEY_URL =
   (import.meta.env.VITE_VERIFICATION_KEY_URL as string | undefined) ?? '/circuits/intent_verification_key.json';
 
 let poseidonPromise: Promise<any> | null = null;
+let garagaInitPromise: Promise<void> | null = null;
 
 async function getPoseidon(): Promise<any> {
   if (!poseidonPromise) {
@@ -56,6 +58,20 @@ async function getPoseidon(): Promise<any> {
 
 function toHexFelt(value: bigint): string {
   return `0x${value.toString(16)}`;
+}
+
+function feltToHex(value: string | number | bigint): string {
+  if (typeof value === 'string') {
+    return value.startsWith('0x') ? value : `0x${BigInt(value).toString(16)}`;
+  }
+  return `0x${BigInt(value).toString(16)}`;
+}
+
+async function ensureGaragaInitialized(): Promise<void> {
+  if (!garagaInitPromise) {
+    garagaInitPromise = initGaraga();
+  }
+  await garagaInitPromise;
 }
 
 async function assertCircuitAsset(url: string, label: string): Promise<void> {
@@ -129,17 +145,62 @@ export const generateProof = async (inputs: ProofInputs): Promise<ProofOutput> =
 
   // Privacy Track hard requirement:
   // proof generation must fail closed, never degrade to mock proofs.
-  const { proof } = await groth16.fullProve(circuitInputs, CIRCUIT_WASM_URL, CIRCUIT_ZKEY_URL);
-  const proofData = [
-    proof.pi_a[0], // A_x
-    proof.pi_a[1], // A_y
-    proof.pi_b[0][0], // B_x[0]
-    proof.pi_b[0][1], // B_x[1]
-    proof.pi_b[1][0], // B_y[0]
-    proof.pi_b[1][1], // B_y[1]
-    proof.pi_c[0], // C_x
-    proof.pi_c[1], // C_y
-  ].map((x) => BigInt(x).toString());
+  const { proof, publicSignals } = await groth16.fullProve(circuitInputs, CIRCUIT_WASM_URL, CIRCUIT_ZKEY_URL);
+
+  // Garaga verifier expects "full_proof_with_hints" calldata, not just 8 Groth16 coordinates.
+  await ensureGaragaInitialized();
+  const vkResponse = await fetch(VERIFICATION_KEY_URL);
+  if (!vkResponse.ok) {
+    throw new Error(`Verification key not found at ${VERIFICATION_KEY_URL} (HTTP ${vkResponse.status})`);
+  }
+  const verificationKey = await vkResponse.json();
+
+  const garagaPayloadCandidates: unknown[] = [
+    // Candidate 1: snarkjs-style proof with explicit public inputs.
+    {
+      ...proof,
+      publicInputs: publicSignals,
+      public_inputs: publicSignals,
+    },
+    // Candidate 2: Garaga docs-style wrapper.
+    {
+      eliptic_curve_id: 'bn254',
+      elliptic_curve_id: 'bn254',
+      proof: {
+        a: {
+          x: feltToHex(proof.pi_a[0]),
+          y: feltToHex(proof.pi_a[1]),
+        },
+        b: {
+          x: [feltToHex(proof.pi_b[0][0]), feltToHex(proof.pi_b[0][1])],
+          y: [feltToHex(proof.pi_b[1][0]), feltToHex(proof.pi_b[1][1])],
+        },
+        c: {
+          x: feltToHex(proof.pi_c[0]),
+          y: feltToHex(proof.pi_c[1]),
+        },
+      },
+      public_inputs: publicSignals.map((v) => feltToHex(v)),
+      publicInputs: publicSignals.map((v) => feltToHex(v)),
+    },
+  ];
+
+  let garagaCalldata: Array<bigint | string | number> | null = null;
+  let lastGaragaError: unknown = null;
+  for (const payload of garagaPayloadCandidates) {
+    try {
+      garagaCalldata = await getGroth16CallData(payload, verificationKey, CurveId.BN254);
+      if (Array.isArray(garagaCalldata) && garagaCalldata.length > 0) {
+        break;
+      }
+    } catch (err) {
+      lastGaragaError = err;
+    }
+  }
+  if (!garagaCalldata || garagaCalldata.length === 0) {
+    throw new Error(`Failed to build Garaga proof calldata: ${String(lastGaragaError)}`);
+  }
+  const proofData = garagaCalldata.map((x) => BigInt(x).toString());
 
   // Public inputs that will be visible on-chain
   const publicInputs = [
@@ -168,6 +229,12 @@ export const verifyProof = async (
   publicInputs: string[]
 ): Promise<boolean> => {
   try {
+    if (proof.proof_data.length !== 8) {
+      // We now store Garaga full calldata for on-chain verification.
+      // Local snarkjs verification expects raw Groth16 points (8 elements).
+      return false;
+    }
+
     // Fetch verification key
     const response = await fetch(VERIFICATION_KEY_URL);
     const vKey = await response.json();
