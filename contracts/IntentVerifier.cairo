@@ -61,12 +61,25 @@ mod IntentVerifier {
                 return false;
             }
 
+            // `call_contract_syscall` requires fully ABI-serialized calldata.
+            // Garaga entrypoint expects `Span<felt252>`, i.e. `[len, ...elements]`.
+            let mut forwarded: Array<felt252> = array![];
+            forwarded.append(proof_data.len().into());
+            let mut i = 0;
+            loop {
+                if i >= proof_data.len() {
+                    break;
+                }
+                forwarded.append(*proof_data.at(i));
+                i += 1;
+            };
+
             // Forward calldata to Garaga-generated verifier:
             // verify_groth16_proof_bn254(...)
             let call_result = starknet::syscalls::call_contract_syscall(
                 self.garaga_verifier_contract.read(),
                 selector!("verify_groth16_proof_bn254"),
-                proof_data
+                forwarded.span()
             );
 
             match call_result {

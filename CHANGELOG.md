@@ -21,6 +21,7 @@
 - Updated frontend proof submission to send Garaga `full_proof_with_hints` calldata (instead of only 8 Groth16 coordinates), aligning with generated verifier input requirements and resolving on-chain `Invalid proofs` rejections.
 - Corrected Garaga proof/vk object mapping to official `Groth16Proof` / `Groth16VerifyingKey` shapes (with BN254 `curveId` and bigint coordinates), fixing `Failed to parse G1PointBigUint` during proof creation.
 - Switched Groth16 calldata generation to Garaga's wasm parser path (`get_groth16_calldata`) with typed fallback, reducing proof/vk field-order mismatch risk that caused on-chain `Invalid proofs`.
+- Fixed `IntentVerifier` adapter ABI forwarding: now prepends `proof_data` length before `call_contract_syscall` to Garaga (`Span<felt252>`), preventing false `Invalid proofs` on matched intents.
 
 ## [0.1.45] - 2026-02-22
 
