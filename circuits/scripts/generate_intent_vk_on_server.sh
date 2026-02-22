@@ -45,15 +45,15 @@ if [ ! -f "$POT_FINAL" ]; then
   echo "🧪 Generating Powers of Tau (bn128, 2^${POT_POWER})"
   docker run --rm \
     -v "$ROOT_DIR":/work -w /work/circuits \
-    node:18-bullseye bash -lc "npx -y snarkjs powersoftau new bn128 ${POT_POWER} ptau/pot${POT_POWER}_0000.ptau -v && \
-      npx -y snarkjs powersoftau contribute ptau/pot${POT_POWER}_0000.ptau ptau/pot${POT_POWER}_final.ptau --name='StarkShield Hackathon' -v -e='starkshield-hackathon'"
+    node:18-bullseye bash -lc "npx -y snarkjs powersoftau new bn128 ${POT_POWER} ptau/pot${POT_POWER}_0000.ptau && \
+      npx -y snarkjs powersoftau contribute ptau/pot${POT_POWER}_0000.ptau ptau/pot${POT_POWER}_final.ptau --name='StarkShield Hackathon' -e='starkshield-hackathon'"
 fi
 
 if [ ! -f "$POT_PHASE2" ]; then
   echo "🧪 Preparing Powers of Tau phase2"
   docker run --rm \
     -v "$ROOT_DIR":/work -w /work/circuits \
-    node:18-bullseye bash -lc "npx -y snarkjs powersoftau prepare phase2 ptau/pot${POT_POWER}_final.ptau ptau/pot${POT_POWER}_phase2.ptau -v"
+    node:18-bullseye bash -lc "npx -y snarkjs powersoftau prepare phase2 ptau/pot${POT_POWER}_final.ptau ptau/pot${POT_POWER}_phase2.ptau"
 fi
 
 echo "🔧 Groth16 setup + export verification key"
