@@ -17,6 +17,7 @@
 - Updated frontend proof asset URLs to support env overrides and improved missing-asset errors (avoid opaque wasm magic-number failures).
 - Fixed intent proof witness generation by providing all required circuit inputs (`intentHash`, `nullifier`, `currentTime`) and switching frontend hash/nullifier derivation to Poseidon to match `intent_circuit.circom`.
 - Fixed browser runtime error `Buffer is not defined` during ZK proof generation by adding Vite node polyfills and explicit `globalThis.Buffer` initialization.
+- Fixed matcher compatibility checks for decimal amounts (`0.1`, etc.) by comparing base-unit values from `proof_public_inputs` (with backward-compatible fallback parsing), preventing valid reciprocal intents from staying indefinitely pending.
 
 ## [0.1.45] - 2026-02-22
 

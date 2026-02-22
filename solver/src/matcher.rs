@@ -19,6 +19,23 @@ pub struct IntentMatcher {
 }
 
 impl IntentMatcher {
+    fn amounts_in_base_units(intent: &Intent) -> Option<(BigUint, BigUint)> {
+        // Prefer prover-supplied base-unit values:
+        // [user, tokenIn, tokenOut, amountIn, minAmountOut, deadline]
+        if intent.proof_public_inputs.len() >= 5 {
+            let amount_in = BigUint::from_str(&intent.proof_public_inputs[3]).ok()?;
+            let min_out = BigUint::from_str(&intent.proof_public_inputs[4]).ok()?;
+            return Some((amount_in, min_out));
+        }
+
+        // Backward compatibility for older intents without proof_public_inputs.
+        let in_decimals = token_decimals_for(&intent.public_inputs.token_in);
+        let out_decimals = token_decimals_for(&intent.public_inputs.token_out);
+        let amount_in = parse_amount_to_base_units(&intent.public_inputs.amount_in, in_decimals).ok()?;
+        let min_out = parse_amount_to_base_units(&intent.public_inputs.min_amount_out, out_decimals).ok()?;
+        Some((amount_in, min_out))
+    }
+
     pub fn new(
         storage: Arc<RedisStorage>,
         config: MatchingConfig,
@@ -156,26 +173,15 @@ impl IntentMatcher {
             return false;
         }
         
-        // Check amount compatibility
-        // A's input should satisfy B's minimum output
-        let amount_a_in = match BigUint::from_str(&a.public_inputs.amount_in) {
-            Ok(v) => v,
-            Err(_) => return false,
+        // Check amount compatibility in base units.
+        // A's input should satisfy B's minimum output, and vice versa.
+        let (amount_a_in, min_a_out) = match Self::amounts_in_base_units(a) {
+            Some(v) => v,
+            None => return false,
         };
-        
-        let min_b_out = match BigUint::from_str(&b.public_inputs.min_amount_out) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        
-        let amount_b_in = match BigUint::from_str(&b.public_inputs.amount_in) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        
-        let min_a_out = match BigUint::from_str(&a.public_inputs.min_amount_out) {
-            Ok(v) => v,
-            Err(_) => return false,
+        let (amount_b_in, min_b_out) = match Self::amounts_in_base_units(b) {
+            Some(v) => v,
+            None => return false,
         };
         
         // Both sides must be satisfied
@@ -197,11 +203,9 @@ impl IntentMatcher {
     }
 
     fn compatibility_surplus(&self, a: &Intent, b: &Intent) -> f64 {
-        // Calculate surplus using BigUint, convert to f64 for sorting only
-        let amount_a_in = BigUint::from_str(&a.public_inputs.amount_in).unwrap_or_default();
-        let min_b_out = BigUint::from_str(&b.public_inputs.min_amount_out).unwrap_or_default();
-        let amount_b_in = BigUint::from_str(&b.public_inputs.amount_in).unwrap_or_default();
-        let min_a_out = BigUint::from_str(&a.public_inputs.min_amount_out).unwrap_or_default();
+        // Calculate surplus using base units, convert to f64 for ranking only.
+        let (amount_a_in, min_a_out) = Self::amounts_in_base_units(a).unwrap_or_default();
+        let (amount_b_in, min_b_out) = Self::amounts_in_base_units(b).unwrap_or_default();
         
         let surplus_a = if amount_a_in >= min_b_out {
             &amount_a_in - &min_b_out
