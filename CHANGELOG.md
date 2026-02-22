@@ -16,6 +16,7 @@
 - Added `deploy/scripts/prepare_frontend_circuit_assets.sh` and wired it into `deploy.sh` so frontend `/circuits/*` assets are prepared before image build.
 - Updated frontend proof asset URLs to support env overrides and improved missing-asset errors (avoid opaque wasm magic-number failures).
 - Fixed intent proof witness generation by providing all required circuit inputs (`intentHash`, `nullifier`, `currentTime`) and switching frontend hash/nullifier derivation to Poseidon to match `intent_circuit.circom`.
+- Fixed browser runtime error `Buffer is not defined` during ZK proof generation by adding Vite node polyfills and explicit `globalThis.Buffer` initialization.
 
 ## [0.1.45] - 2026-02-22
 
