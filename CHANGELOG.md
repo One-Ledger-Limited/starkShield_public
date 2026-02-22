@@ -13,6 +13,8 @@
 - Added `deploy/scripts/zk/rollout_garaga_on_server.sh` to run server-side end-to-end rollout with build retries and Starkli env wiring.
 - Hardened `deploy/scripts/zk/deploy_garaga_stack_starkli.sh` with nonce/rate-limit retries and automatic CASM-hash fallback for declare mismatch errors.
 - Updated `deploy/scripts/zk/rollout_garaga_on_server.sh` to read required values from `.env` directly and default to `ZAN /rpc/v0_8` for starkli compatibility.
+- Added `deploy/scripts/prepare_frontend_circuit_assets.sh` and wired it into `deploy.sh` so frontend `/circuits/*` assets are prepared before image build.
+- Updated frontend proof asset URLs to support env overrides and improved missing-asset errors (avoid opaque wasm magic-number failures).
 
 ## [0.1.45] - 2026-02-22
 

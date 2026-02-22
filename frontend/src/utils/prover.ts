@@ -37,15 +37,33 @@ function tokenDecimals(address: string): number {
 }
 
 // Circuit file paths (would be hosted on CDN or loaded locally)
-const CIRCUIT_WASM_URL = '/circuits/intent_circuit.wasm';
-const CIRCUIT_ZKEY_URL = '/circuits/intent_circuit_final.zkey';
-const VERIFICATION_KEY_URL = '/circuits/verification_key.json';
+const CIRCUIT_WASM_URL =
+  (import.meta.env.VITE_CIRCUIT_WASM_URL as string | undefined) ?? '/circuits/intent_circuit.wasm';
+const CIRCUIT_ZKEY_URL =
+  (import.meta.env.VITE_CIRCUIT_ZKEY_URL as string | undefined) ?? '/circuits/intent_circuit_final.zkey';
+const VERIFICATION_KEY_URL =
+  (import.meta.env.VITE_VERIFICATION_KEY_URL as string | undefined) ?? '/circuits/intent_verification_key.json';
+
+async function assertCircuitAsset(url: string, label: string): Promise<void> {
+  const response = await fetch(url, { method: 'GET' });
+  if (!response.ok) {
+    throw new Error(`${label} not found at ${url} (HTTP ${response.status})`);
+  }
+  // Guard against SPA fallback HTML being served as wasm/zkey.
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  if (contentType.includes('text/html')) {
+    throw new Error(`${label} URL returned HTML instead of binary file: ${url}`);
+  }
+}
 
 /**
  * Generate a ZK proof for a trade intent
  * This runs entirely client-side in the browser
  */
 export const generateProof = async (inputs: ProofInputs): Promise<ProofOutput> => {
+  await assertCircuitAsset(CIRCUIT_WASM_URL, 'Circuit WASM');
+  await assertCircuitAsset(CIRCUIT_ZKEY_URL, 'Circuit ZKey');
+
   // Generate random salt for the intent
   const salt = BigInt(Math.floor(Math.random() * 1000000000));
   

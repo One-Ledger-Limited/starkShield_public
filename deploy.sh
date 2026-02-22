@@ -52,6 +52,10 @@ echo "🏷️  Deploy version: $(cat VERSION 2>/dev/null || true)"
 echo "🛑 Stopping existing containers..."
 $COMPOSE_CMD -f "$COMPOSE_FILE" down --remove-orphans || true
 
+# Ensure frontend `/circuits/*` static files exist before image build.
+echo "🧩 Preparing frontend circuit assets..."
+bash deploy/scripts/prepare_frontend_circuit_assets.sh
+
 # If compose couldn't fully tear down (common on some hosts), ensure our named resources
 # are removed before recreating to avoid "already exists" conflicts.
 docker rm -f starkshield-redis starkshield-solver starkshield-frontend >/dev/null 2>&1 || true
