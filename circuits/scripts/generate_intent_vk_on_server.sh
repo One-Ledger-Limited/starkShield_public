@@ -39,6 +39,7 @@ docker run --rm \
 
 POT_0000="$PTAU_DIR/pot${POT_POWER}_0000.ptau"
 POT_FINAL="$PTAU_DIR/pot${POT_POWER}_final.ptau"
+POT_PHASE2="$PTAU_DIR/pot${POT_POWER}_phase2.ptau"
 
 if [ ! -f "$POT_FINAL" ]; then
   echo "🧪 Generating Powers of Tau (bn128, 2^${POT_POWER})"
@@ -48,10 +49,17 @@ if [ ! -f "$POT_FINAL" ]; then
       npx -y snarkjs powersoftau contribute ptau/pot${POT_POWER}_0000.ptau ptau/pot${POT_POWER}_final.ptau --name='StarkShield Hackathon' -v -e='starkshield-hackathon'"
 fi
 
+if [ ! -f "$POT_PHASE2" ]; then
+  echo "🧪 Preparing Powers of Tau phase2"
+  docker run --rm \
+    -v "$ROOT_DIR":/work -w /work/circuits \
+    node:18-bullseye bash -lc "npx -y snarkjs powersoftau prepare phase2 ptau/pot${POT_POWER}_final.ptau ptau/pot${POT_POWER}_phase2.ptau -v"
+fi
+
 echo "🔧 Groth16 setup + export verification key"
 docker run --rm \
   -v "$ROOT_DIR":/work -w /work/circuits \
-  node:18-bullseye bash -lc "npx -y snarkjs groth16 setup build/intent_circuit.r1cs ptau/pot${POT_POWER}_final.ptau build/intent_circuit_final.zkey && \
+  node:18-bullseye bash -lc "npx -y snarkjs groth16 setup build/intent_circuit.r1cs ptau/pot${POT_POWER}_phase2.ptau build/intent_circuit_final.zkey && \
     npx -y snarkjs zkey export verificationkey build/intent_circuit_final.zkey build/intent_verification_key.json"
 
 echo "✅ Wrote: $BUILD_DIR/intent_verification_key.json"
