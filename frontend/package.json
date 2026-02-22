@@ -19,6 +19,7 @@
     "react-query": "^3.39.3",
     "ethers": "^6.0.0",
     "snarkjs": "^0.7.0",
+    "circomlibjs": "^0.1.7",
     "axios": "^1.6.0",
     "date-fns": "^2.30.0",
     "lucide-react": "^0.294.0",
