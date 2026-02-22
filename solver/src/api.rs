@@ -563,12 +563,12 @@ async fn submit_intent(
         request.public_inputs.user, correlation_id
     );
 
-    if request.proof_data.len() < 8 {
+    if request.proof_data.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             JsonResponse(error_response(
                 "INVALID_PROOF",
-                "Invalid proof data",
+                "Invalid proof data (empty)",
                 Some(correlation_id),
             )),
         ));

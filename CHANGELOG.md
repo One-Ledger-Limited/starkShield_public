@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.46] - 2026-02-22
+
+### Security
+- Replaced placeholder `IntentVerifier` logic with a Garaga adapter that forwards proof calldata to a deployed Garaga Groth16 verifier contract.
+- Added owner-gated admin methods in `IntentVerifier` to rotate/update the Garaga verifier contract address.
+- Removed frontend mock-proof fallback; proof generation now fails closed if SNARK artifacts are unavailable.
+
+### Added
+- Added `circuits/scripts/generate_garaga_verifier_on_server.sh` to generate a Cairo verifier project from `circuits/build/intent_verification_key.json` using Garaga.
+- Added `deploy/scripts/zk/prepare_garaga_artifacts.sh` and `deploy/scripts/zk/deploy_garaga_stack_starkli.sh` to automate on-chain Garaga verifier rollout and `DarkPool.update_verifier`.
+- Added `deploy/scripts/zk/rollout_garaga_on_server.sh` to run server-side end-to-end rollout with build retries and Starkli env wiring.
+- Hardened `deploy/scripts/zk/deploy_garaga_stack_starkli.sh` with nonce/rate-limit retries and automatic CASM-hash fallback for declare mismatch errors.
+- Updated `deploy/scripts/zk/rollout_garaga_on_server.sh` to read required values from `.env` directly and default to `ZAN /rpc/v0_8` for starkli compatibility.
+
 ## [0.1.45] - 2026-02-22
 
 ### Security

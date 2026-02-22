@@ -82,25 +82,19 @@ export const generateProof = async (inputs: ProofInputs): Promise<ProofOutput> =
 
   const nullifier = keccak256(toUtf8Bytes(`${circuitInputs.user.toString()}:${circuitInputs.salt.toString()}`));
 
-  // Attempt to generate a real SNARK; if circuits are missing in the deployed build,
-  // fall back to a deterministic mock proof so the demo flow remains usable.
-  let proofData: string[] = [];
-  try {
-    const { proof } = await groth16.fullProve(circuitInputs, CIRCUIT_WASM_URL, CIRCUIT_ZKEY_URL);
-    proofData = [
-      proof.pi_a[0], // A_x
-      proof.pi_a[1], // A_y
-      proof.pi_b[0][0], // B_x[0]
-      proof.pi_b[0][1], // B_x[1]
-      proof.pi_b[1][0], // B_y[0]
-      proof.pi_b[1][1], // B_y[1]
-      proof.pi_c[0], // C_x
-      proof.pi_c[1], // C_y
-    ].map((x) => BigInt(x).toString());
-  } catch (error) {
-    console.warn('SNARK proof generation failed; using mock proof for demo.', error);
-    proofData = Array.from({ length: 8 }, (_, i) => (i + 1).toString());
-  }
+  // Privacy Track hard requirement:
+  // proof generation must fail closed, never degrade to mock proofs.
+  const { proof } = await groth16.fullProve(circuitInputs, CIRCUIT_WASM_URL, CIRCUIT_ZKEY_URL);
+  const proofData = [
+    proof.pi_a[0], // A_x
+    proof.pi_a[1], // A_y
+    proof.pi_b[0][0], // B_x[0]
+    proof.pi_b[0][1], // B_x[1]
+    proof.pi_b[1][0], // B_y[0]
+    proof.pi_b[1][1], // B_y[1]
+    proof.pi_c[0], // C_x
+    proof.pi_c[1], // C_y
+  ].map((x) => BigInt(x).toString());
 
   // Public inputs that will be visible on-chain
   const publicInputs = [
