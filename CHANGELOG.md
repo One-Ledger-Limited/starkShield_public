@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.70] - 2026-02-25
+
+### Fixed
+- Updated public docs to use the real open-source repository URL (`https://github.com/Shield-Trade/starkShield_public`) instead of placeholder `your-org` links.
+- Fixed docs/API request examples to match current solver payload requirements by including `proof_public_inputs` and extended `public_inputs` fields (`nonce`, `chain_id`, `domain_separator`, `version`).
+- Updated docs/API response/error examples to include `correlation_id` for operational troubleshooting consistency.
+- Updated docs endpoint examples to prefer `/v1/...` routes and explicitly list supported legacy aliases.
+- Corrected contract documentation to describe `proof_data` as dynamic Garaga calldata (not fixed 8 elements).
+
 ## [0.1.69] - 2026-02-25
 
 ### Fixed

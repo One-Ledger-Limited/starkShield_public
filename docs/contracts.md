@@ -42,8 +42,8 @@ Submits a new trade intent with ZK proof.
 **Parameters:**
 - `proof.intent_hash`: Poseidon hash of intent parameters
 - `proof.nullifier`: Unique identifier to prevent double-spending
-- `proof.proof_data`: Groth16 proof (8 field elements)
-- `proof.public_inputs`: Public inputs (6 field elements)
+- `proof.proof_data`: Garaga verifier calldata generated from Groth16 proof and verification key (dynamic length)
+- `proof.public_inputs`: Business public fields used by DarkPool compatibility checks (`[user, token_in, token_out, amount_in, min_amount_out, deadline]`)
 
 **Events:**
 - `IntentSubmitted`: Emitted on successful submission
