@@ -7,8 +7,9 @@ edition = "2023_11"
 
 [dependencies]
 starknet = ">=2.6.0"
-# Hackathon/MVP: avoid large dependency graph that can break across Cairo versions.
-# DarkPool uses a minimal local ERC20 interface; IntentVerifier is a placeholder verifier.
+# Keep dependency graph minimal for stable Cairo builds.
+# DarkPool uses a local ERC20 interface; IntentVerifier now forwards verification to a
+# Garaga-generated verifier contract deployed separately.
 
 [[target.starknet-contract]]
 sierra = true

@@ -16,6 +16,15 @@ interface LoginResponse {
 
 const REQUIRE_LOGIN = (import.meta.env.VITE_REQUIRE_LOGIN as string | undefined)?.toLowerCase() === 'true';
 
+function formatWalletAddress(address?: string): string {
+  if (!address) return '';
+  const trimmed = address.trim().toLowerCase();
+  if (!trimmed.startsWith('0x')) return trimmed;
+  const hex = trimmed.slice(2).replace(/^0+/, '') || '0';
+  const normalized = `0x${hex.padStart(64, '0')}`;
+  return `${normalized.slice(0, 6)}...${normalized.slice(-4)}`;
+}
+
 function App() {
   const { address, isConnected } = useAccount();
   const { connect, connectors } = useConnect();
@@ -110,7 +119,7 @@ function App() {
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {isConnected ? (
                   <span className="text-sm text-gray-400">
-                    {address?.slice(0, 6)}...{address?.slice(-4)}
+                    {formatWalletAddress(address)}
                   </span>
                 ) : (
                   connectors.map((connector) => (

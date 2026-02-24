@@ -99,7 +99,7 @@ struct TradeIntent {
 struct IntentProof {
     intent_hash: felt252,
     nullifier: felt252,
-    proof_data: Array<felt252>,  // Groth16 proof
+    proof_data: Array<felt252>,  // Verifier calldata (Garaga)
     public_inputs: Array<felt252>,
 }
 ```
@@ -107,7 +107,7 @@ struct IntentProof {
 ## IntentVerifier Contract
 
 ### Purpose
-Verifies Groth16 ZK proofs using Garaga library.
+Forwards Groth16 proof calldata to a Garaga-generated verifier contract.
 
 ### Key Functions
 
@@ -116,17 +116,15 @@ Verifies that a proof attests to valid intent constraints.
 
 **Verification Steps:**
 1. Check nullifier not already used
-2. Decode Groth16 proof from field elements
+2. Decode verifier calldata for Groth16 verification
 3. Verify pairing equation: e(A,B) = e(α,β) × e(accumulated_input,γ) × e(C,δ)
 4. Return verification result
 
-### Verification Key
-Stored on-chain and updatable by admin. Contains:
-- Alpha G1 point
-- Beta G2 point  
-- Gamma G2 point
-- Delta G2 point
-- IC points for public inputs
+### Verifier Setup
+1. Generate `circuits/build/intent_verification_key.json`
+2. Run `bash circuits/scripts/generate_garaga_verifier_on_server.sh`
+3. Deploy the generated `contracts/garaga_intent_verifier` contract on Starknet
+4. Configure the deployed verifier address in `IntentVerifier` (constructor or admin update)
 
 ## Settlement Flow
 
@@ -276,7 +274,7 @@ npm test
 
 **Known Limitations:**
 - Solver centralization in MVP
-- Proof verification is placeholder (needs Garaga integration)
+- Garaga verifier must be generated/deployed separately and configured in `IntentVerifier`
 - Limited to direct transfers (no AMM routing yet)
 
 ## References

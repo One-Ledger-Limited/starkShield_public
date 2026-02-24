@@ -118,7 +118,7 @@ cd frontend && npm run dev
 - [Cairo Contracts](./docs/contracts.md)
 - [API Reference](./docs/api.md)
 - [Getting Started](./docs/getting-started.md)
-- [Hackathon Delivery Playbook](./doc/Hackathon_Delivery_Playbook.md)
+- [Deployment Guide](./DEPLOY.md)
 
 ## Testing
 

@@ -140,6 +140,41 @@ async function starknetCall(
   }
 }
 
+async function waitForTransactionAccepted(txHash: string, timeoutMs = 180000): Promise<void> {
+  const started = Date.now();
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const payload = {
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'starknet_getTransactionReceipt',
+        params: [txHash],
+      };
+      const { data } = await apiClient.post<any>('/v1/starknet-rpc', payload);
+      const result = data?.result;
+      const finality = String(result?.finality_status ?? '');
+      const execution = String(result?.execution_status ?? '');
+      if (finality === 'ACCEPTED_ON_L1' || finality === 'ACCEPTED_ON_L2') {
+        if (execution && execution !== 'SUCCEEDED') {
+          throw new Error(`Approval tx execution status: ${execution}`);
+        }
+        return;
+      }
+      if (execution === 'REVERTED') {
+        const reason = result?.revert_reason ? ` (${String(result.revert_reason)})` : '';
+        throw new Error(`Approval transaction reverted${reason}`);
+      }
+    } catch {
+      // Keep polling for temporarily unavailable / pending receipt.
+    }
+    await sleep(3000);
+  }
+
+  throw new Error('Approval transaction confirmation timeout. Please check wallet history.');
+}
+
 function safeReadDraft(): DraftIntentV1 | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -205,8 +240,31 @@ const TWAP_PAIR_BY_SYMBOL: Record<string, string> = {
   USDT: 'USDT/USD',
 };
 
+function isInvalidProofError(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | null;
+  if (e?.code === 'INVALID_PROOF') return true;
+  const msg = String(e?.message ?? error ?? '');
+  return /invalid proof/i.test(msg) || /invalid proofs/i.test(msg);
+}
+
 function getTokenSymbol(tokenAddress: string): string {
   return TOKEN_SYMBOL_BY_ADDRESS.get(tokenAddress) ?? 'Token';
+}
+
+function isTransientWalletRpcError(error: unknown): boolean {
+  const msg = String((error as any)?.message ?? error ?? '');
+  return /Unexpected end of JSON input/i.test(msg)
+    || /Failed to fetch/i.test(msg)
+    || /network error/i.test(msg)
+    || /ECONNRESET/i.test(msg);
+}
+
+function shouldRetryWithZeroAllowance(error: unknown): boolean {
+  const msg = String((error as any)?.message ?? error ?? '').toLowerCase();
+  return msg.includes('insufficient allowance')
+    || msg.includes('approve from non-zero')
+    || msg.includes('allowance')
+    || msg.includes('20') && msg.includes('revert');
 }
 
 export const TradeForm: React.FC = () => {
@@ -362,8 +420,10 @@ export const TradeForm: React.FC = () => {
 	          const allowanceRes = await starknetCall(tokenIn, 'allowance', [address, spender]);
 	          const allowance = uint256ToBigInt(allowanceRes);
 	          if (allowance < required) {
-	            setPrecheckMessage('Please approve the Dark Pool contract before submitting.');
-	            setErrorMessage('Please approve the Dark Pool contract before submitting.');
+              const tokenSym = getTokenSymbol(tokenIn);
+              const msg = `Allowance too low for ${tokenSym}. Allowance=${formatUnits(allowance, decimals)} Required=${tradeParams.amountIn} Spender=${spender}`;
+	            setPrecheckMessage(msg);
+	            setErrorMessage(msg);
 	            setNeedsApproval(true);
 	            return;
 	          }
@@ -378,28 +438,62 @@ export const TradeForm: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      await submitIntent({
-        proof: proofData,
-        userAddress: address,
-        tokenIn: tradeParams.tokenIn,
-        tokenOut: tradeParams.tokenOut,
-        amountIn: tradeParams.amountIn,
-        minAmountOut: tradeParams.minAmountOut,
-        deadline: tradeParams.deadline,
-      });
-      setSuccessMessage('Intent submitted successfully.');
-      flow.markIntentSubmitted();
-      
-      // Reset form
-      setTradeParams({
-        tokenIn: '',
-        tokenOut: '',
-        amountIn: '',
-        minAmountOut: '',
-        deadline: Math.floor(Date.now() / 1000) + 3600,
-      });
-      setProofData(null);
-      safeClearDraft();
+      const submitWithProof = async (proof: any) => {
+        await submitIntent({
+          proof,
+          userAddress: address,
+          tokenIn: tradeParams.tokenIn,
+          tokenOut: tradeParams.tokenOut,
+          amountIn: tradeParams.amountIn,
+          minAmountOut: tradeParams.minAmountOut,
+          deadline: tradeParams.deadline,
+        });
+      };
+
+      const finalizeSuccess = () => {
+        setSuccessMessage('Intent submitted successfully.');
+        flow.markIntentSubmitted();
+
+        // Reset form
+        setTradeParams({
+          tokenIn: '',
+          tokenOut: '',
+          amountIn: '',
+          minAmountOut: '',
+          deadline: Math.floor(Date.now() / 1000) + 3600,
+        });
+        setProofData(null);
+        safeClearDraft();
+      };
+
+      try {
+        await submitWithProof(proofData);
+        finalizeSuccess();
+      } catch (firstError) {
+        if (!isInvalidProofError(firstError)) {
+          throw firstError;
+        }
+
+        // Backend preflight rejected this proof; regenerate once and retry automatically.
+        setPrecheckMessage('檢測到 proof 無效，正在重新生成並重試一次...');
+        const regeneratedProof = await generateProof({
+          user: address,
+          tokenIn: tradeParams.tokenIn,
+          tokenOut: tradeParams.tokenOut,
+          amountIn: tradeParams.amountIn,
+          minAmountOut: tradeParams.minAmountOut,
+          deadline: tradeParams.deadline,
+        });
+        setProofData(regeneratedProof);
+        safeWriteDraft({
+          user: address,
+          tradeParams,
+          proofData: regeneratedProof,
+          createdAtMs: Date.now(),
+        });
+        await submitWithProof(regeneratedProof);
+        finalizeSuccess();
+      }
     } catch (error) {
       console.error('Failed to submit intent:', error);
       setErrorMessage(toUserErrorMessage(error));
@@ -811,31 +905,58 @@ export const TradeForm: React.FC = () => {
                       const high = approveAmount >> 128n;
 	                    const feltHex = (v: bigint) => `0x${v.toString(16)}`;
 
+                      const executeWithRetry = async (calls: Array<{ contractAddress: string; entrypoint: string; calldata: string[] }>) => {
+                        for (let attempt = 1; attempt <= 2; attempt += 1) {
+                          try {
+                            return await (account as any).execute(calls);
+                          } catch (err) {
+                            if (attempt === 1 && isTransientWalletRpcError(err)) {
+                              await new Promise((r) => setTimeout(r, 1200));
+                              continue;
+                            }
+                            throw err;
+                          }
+                        }
+                      };
+
+                      let execResult: any;
 	                    try {
-	                      await (account as any).execute([
-	                        {
-	                          contractAddress: tokenIn,
-	                          entrypoint: 'approve',
-	                          calldata: [spender, feltHex(low), feltHex(high)],
-	                        },
-	                      ]);
+                        execResult = await executeWithRetry([
+                          {
+                            contractAddress: tokenIn,
+                            entrypoint: 'approve',
+                            calldata: [spender, feltHex(low), feltHex(high)],
+                          },
+                        ]);
 	                    } catch (e) {
+                        if (!shouldRetryWithZeroAllowance(e)) {
+                          throw e;
+                        }
 	                      // Some token implementations require setting allowance to 0 before increasing.
-	                      await (account as any).execute([
-	                        {
-	                          contractAddress: tokenIn,
-	                          entrypoint: 'approve',
-	                          calldata: [spender, feltHex(0n), feltHex(0n)],
-	                        },
-	                        {
-	                          contractAddress: tokenIn,
-	                          entrypoint: 'approve',
-	                          calldata: [spender, feltHex(low), feltHex(high)],
-	                        },
-	                      ]);
+                        execResult = await executeWithRetry([
+                          {
+                            contractAddress: tokenIn,
+                            entrypoint: 'approve',
+                            calldata: [spender, feltHex(0n), feltHex(0n)],
+                          },
+                          {
+                            contractAddress: tokenIn,
+                            entrypoint: 'approve',
+                            calldata: [spender, feltHex(low), feltHex(high)],
+                          },
+                        ]);
 	                    }
 
-	                    setSuccessMessage('Approval transaction submitted. Waiting for allowance update...');
+                      const txHash = String(
+                        execResult?.transaction_hash
+                        ?? execResult?.transactionHash
+                        ?? ''
+                      );
+                      if (txHash) {
+                        setPrecheckMessage(`Approval submitted (${txHash.slice(0, 12)}...). Waiting for confirmation...`);
+                        await waitForTransactionAccepted(txHash);
+                      }
+	                    setSuccessMessage('Approval confirmed. Waiting for allowance update...');
 	                    setAutoSubmitAfterApprove(true);
 	                  } catch (e) {
 	                    setErrorMessage(toUserErrorMessage(e));

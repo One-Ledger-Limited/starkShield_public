@@ -1,5 +1,172 @@
 # Changelog
 
+## [0.1.69] - 2026-02-25
+
+### Fixed
+- Frontend approval UX now waits for `approve` transaction confirmation (`starknet_getTransactionReceipt`) before re-checking allowance/auto-submit, reducing repeated approval prompts and duplicate gas spend while the tx is still pending.
+- Frontend insufficient-allowance message now includes token, current allowance, required amount, and spender address to make approval mismatches diagnosable.
+
+## [0.1.68] - 2026-02-25
+
+### Fixed
+- Solver settlement flow no longer blocks on transient RPC precheck outages/rate-limit (`cu limit exceeded`/`request too fast`): when precheck is unavailable, matcher now proceeds with on-chain settlement attempt instead of leaving pairs stuck in `Matched`.
+- Fixed Redis match cleanup to delete both `intents:matched` membership and `matched:<id>` payload when a match is settled, preventing stale matched records from showing after successful settlement.
+
+## [0.1.67] - 2026-02-24
+
+### Fixed
+- Fixed `contracts/src/IntentVerifier.cairo` Garaga return decoding: `verify_groth16_proof_bn254` returns `Option<Span<u256>>` with `Some` tag `0`, so adapter success check now uses `option_tag == 0` instead of `!= 0` (which previously inverted success/failure and caused valid proofs to be rejected as `Invalid proof`).
+- Fixed `deploy/scripts/zk/deploy_garaga_stack_starkli.sh` class-hash parsing to avoid picking CASM hash lines during declare retries, preventing false `Class ... is not declared` deploy failures.
+
+## [0.1.66] - 2026-02-24
+
+### Fixed
+- Normalized frontend submit-time felts (`intent_hash`, `nullifier`, `proof_public_inputs`) into Starknet field range before preflight/submit, preventing `representative out of range` parsing failures (e.g., `intent_hash parse error`) on solver preflight.
+
+## [0.1.65] - 2026-02-24
+
+### Fixed
+- Removed frontend Garaga preflight fallback-to-first-candidate behavior when preflight is unavailable. Candidate selection now requires explicit preflight success, preventing `preflight unavailable` warnings from masking invalid submissions.
+
+## [0.1.64] - 2026-02-24
+
+### Fixed
+- Frontend calldata candidate preflight now treats `failed to create Felt from string` / `representative out of range` as deterministic candidate rejection (not `preflight unavailable`), preventing invalid fallback selection that later fails solver submit preflight.
+- Solver proof preflight parsing errors now include precise field context (`intent_hash`, `nullifier`, `proof_data[i]`, `proof_public_inputs[i]`) and value preview to speed up root-cause diagnosis.
+
+## [0.1.63] - 2026-02-24
+
+### Changed
+- Deployment now resets solver runtime intent state on every release by running `deploy/scripts/clear-intent-state.sh` from `deploy.sh`.
+- Added `deploy/scripts/clear-intent-state.sh` to clear Redis intent/match lifecycle keys (`pending`, `matched`, and stored intent records including cancelled entries), ensuring a clean post-deploy state.
+
+## [0.1.62] - 2026-02-24
+
+### Fixed
+- Added explicit solver logging for proof preflight rejections in `submit_intent`, including `correlation_id`, `user`, `nullifier`, and detailed reject reason to make `INVALID_PROOF` failures diagnosable from server logs.
+- Updated frontend `INVALID_PROOF` error rendering to surface backend error details directly (including `correlation_id` when present), instead of always showing a generic message.
+
+## [0.1.61] - 2026-02-24
+
+### Fixed
+- Fixed frontend Garaga preflight candidate selection: preflight-unavailable candidates no longer short-circuit selection. The app now keeps evaluating all candidate mappings and only stops early on explicit preflight success, reducing false `INVALID_PROOF` submissions caused by premature fallback.
+
+## [0.1.60] - 2026-02-24
+
+### Fixed
+- Hardened frontend Garaga calldata selection with on-chain preflight: each parser/typed candidate is now validated via `starknet_call` against `DarkPool.submit_intent` before use, reducing deterministic `INVALID_PROOF` loops caused by choosing a syntactically valid but on-chain-invalid calldata mapping.
+
+## [0.1.59] - 2026-02-24
+
+### Fixed
+- Frontend submit flow now auto-recovers from `INVALID_PROOF`: when solver preflight rejects a proof, the app regenerates ZK proof once and retries submit automatically, reducing manual rework and preventing repeated stalled submissions.
+
+## [0.1.58] - 2026-02-24
+
+### Fixed
+- Added solver-side proof preflight at submit time: `submit_intent` now simulates `DarkPool.submit_intent` via Starknet JSON-RPC and rejects invalid proofs before enqueue, preventing orders from reaching `matched` and then failing settlement with on-chain `Invalid proofs`.
+
+## [0.1.57] - 2026-02-24
+
+### Fixed
+- Hardened `deploy/scripts/zk/deploy_garaga_stack_starkli.sh` nonce handling for `starkli deploy/invoke`: nonce errors (`InvalidTransactionNonce` / `NonceTooOld`) now keep retrying with refreshed nonce + backoff instead of failing the rollout mid-way.
+- Tightened deploy failure detection for Garaga verifier and IntentVerifier adapter deployment: script now exits on actual command failure instead of relying on output-string heuristics.
+
+## [0.1.56] - 2026-02-24
+
+### Fixed
+- Settlement proof calldata generation now prioritizes Garaga parser with G2-order candidate matching (`proof/vk: swapped|canonical`) before typed fallback, so curve-invalid orderings are rejected early instead of producing on-chain `Invalid proofs`.
+
+## [0.1.55] - 2026-02-24
+
+### Fixed
+- Updated solver submit validation for `proof_public_inputs` to accept Groth16-native payloads with `nPublic=3` (instead of enforcing a legacy minimum of 6), resolving `Invalid proof_public_inputs (expected at least 6 elements)` on intent submission.
+
+## [0.1.54] - 2026-02-24
+
+### Fixed
+- Fixed proof public inputs payload for settlement: frontend now submits SNARK-native `publicSignals` as `proof_public_inputs` (instead of business fields), aligning with verifier `nPublic` and preventing on-chain `Invalid proofs` during settlement.
+
+## [0.1.53] - 2026-02-24
+
+### Fixed
+- Hardened frontend token approval flow against intermittent wallet/provider JSON-RPC parse failures (`Unexpected end of JSON input`): approval transaction now retries once for transient RPC errors.
+- Tightened approval fallback behavior: `approve(0) -> approve(N)` is now only used for allowance-related failures, preventing unrelated RPC parse errors from entering an incorrect fallback path.
+
+## [0.1.52] - 2026-02-24
+
+### Fixed
+- Adjusted frontend Garaga typed G2 candidate priority to try `swapped/swapped` first (snarkjs-emitted bn128 ordering), reducing cases where calldata builds successfully but fails on-chain with `Invalid proofs`.
+
+## [0.1.51] - 2026-02-23
+
+### Fixed
+- Solver retry policy now treats `Invalid proofs` as retry-managed failures: it applies exponential backoff immediately and no longer retries every cycle.
+- Added terminal retry cutoff for invalid-proof matches (`MAX_INVALID_PROOF_RETRIES`, default `5`): once reached, the match is removed from the active retry queue to prevent runaway RPC usage.
+- Added `MAX_INVALID_PROOF_RETRIES` and `POLL_INTERVAL_MS` to `.env.example` for explicit retry-tuning.
+
+## [0.1.50] - 2026-02-23
+
+### Fixed
+- Hardened frontend Garaga calldata construction to try all typed G2 limb-order combinations independently for proof and verification key (`canonical/swapped` x `canonical/swapped`), reducing false `Point ... is not on the curve` failures.
+- Demoted `get_groth16_calldata` parser path to a last-resort fallback and normalized parser G2 inputs to affine format (`[x, y]` only), avoiding parser-side G1/G2 shape confusion.
+
+## [0.1.49] - 2026-02-23
+
+### Fixed
+- Fixed Garaga calldata build regression in frontend `create pair`: parser inputs are now normalized to snarkjs-compatible affine G1 shapes (`[x, y]`), preventing `Failed to parse G1PointBigUint`.
+- Restored robust typed fallback order for Garaga calldata generation (`canonical` then `swapped`) when parser path fails, reducing false `Point ... is not on the curve` failures.
+
+## [0.1.48] - 2026-02-23
+
+### Fixed
+- Hardened frontend Garaga proof calldata generation: now prioritizes Garaga's native parser path (`get_groth16_calldata`) and keeps typed mapping as fallback, reducing false-valid calldata generation that later fails on-chain with `Invalid proofs`.
+- Added mandatory local `snarkjs` verification right after proof generation (`groth16.verify` vs verification key) to fail fast before submitting invalid intents.
+
+## [0.1.47] - 2026-02-23
+
+### Fixed
+- Fixed frontend Garaga calldata generation for `create pair`: G2 coordinate parsing now tries canonical order first and automatically falls back to swapped order, resolving `Point ... is not on the curve` errors caused by proof/vkey limb-order differences.
+
+## [0.1.46] - 2026-02-22
+
+### Security
+- Replaced placeholder `IntentVerifier` logic with a Garaga adapter that forwards proof calldata to a deployed Garaga Groth16 verifier contract.
+- Added owner-gated admin methods in `IntentVerifier` to rotate/update the Garaga verifier contract address.
+- Removed frontend mock-proof fallback; proof generation now fails closed if SNARK artifacts are unavailable.
+
+### Added
+- Added `circuits/scripts/generate_garaga_verifier_on_server.sh` to generate a Cairo verifier project from `circuits/build/intent_verification_key.json` using Garaga.
+- Added `deploy/scripts/zk/prepare_garaga_artifacts.sh` and `deploy/scripts/zk/deploy_garaga_stack_starkli.sh` to automate on-chain Garaga verifier rollout and `DarkPool.update_verifier`.
+- Added `deploy/scripts/zk/rollout_garaga_on_server.sh` to run server-side end-to-end rollout with build retries and Starkli env wiring.
+- Hardened `deploy/scripts/zk/deploy_garaga_stack_starkli.sh` with nonce/rate-limit retries and automatic CASM-hash fallback for declare mismatch errors.
+- Updated `deploy/scripts/zk/rollout_garaga_on_server.sh` to read required values from `.env` directly and default to `ZAN /rpc/v0_8` for starkli compatibility.
+- Added `deploy/scripts/prepare_frontend_circuit_assets.sh` and wired it into `deploy.sh` so frontend `/circuits/*` assets are prepared before image build.
+- Updated frontend proof asset URLs to support env overrides and improved missing-asset errors (avoid opaque wasm magic-number failures).
+- Fixed intent proof witness generation by providing all required circuit inputs (`intentHash`, `nullifier`, `currentTime`) and switching frontend hash/nullifier derivation to Poseidon to match `intent_circuit.circom`.
+- Fixed browser runtime error `Buffer is not defined` during ZK proof generation by adding Vite node polyfills and explicit `globalThis.Buffer` initialization.
+- Fixed matcher compatibility checks for decimal amounts (`0.1`, etc.) by comparing base-unit values from `proof_public_inputs` (with backward-compatible fallback parsing), preventing valid reciprocal intents from staying indefinitely pending.
+- Updated frontend proof submission to send Garaga `full_proof_with_hints` calldata (instead of only 8 Groth16 coordinates), aligning with generated verifier input requirements and resolving on-chain `Invalid proofs` rejections.
+- Corrected Garaga proof/vk object mapping to official `Groth16Proof` / `Groth16VerifyingKey` shapes (with BN254 `curveId` and bigint coordinates), fixing `Failed to parse G1PointBigUint` during proof creation.
+- Switched Groth16 calldata generation to Garaga's wasm parser path (`get_groth16_calldata`) with typed fallback, reducing proof/vk field-order mismatch risk that caused on-chain `Invalid proofs`.
+- Fixed `IntentVerifier` adapter ABI forwarding: now prepends `proof_data` length before `call_contract_syscall` to Garaga (`Span<felt252>`), preventing false `Invalid proofs` on matched intents.
+- Hardened frontend Garaga calldata generation to use a single typed path (`getGroth16CallData`) and corrected snarkjs->Garaga G2 coordinate order mapping (`[x1,x0]/[y1,y0]` -> `[x0,x1]/[y0,y1]`).
+
+## [0.1.45] - 2026-02-22
+
+### Security
+- **CRITICAL**: Fixed `cancel_intent` access control - now properly verifies caller is the intent owner
+- Added intent owner storage to track who submitted each intent
+- Implemented proper `pause/unpause` functionality with state checks in `submit_intent` and `settle_match`
+
+### Fixed
+- Matcher now uses `BigUint` for amount comparisons instead of `f64`, eliminating floating-point precision issues in large trades
+- Improved surplus calculation accuracy for matched pairs
+
+### Changed
+- Contract storage now includes `intent_owners` mapping and `paused` flag
+- Enhanced contract initialization to set `paused = false` by default
+
 ## [0.1.42] - 2026-02-14
 
 ### Fixed

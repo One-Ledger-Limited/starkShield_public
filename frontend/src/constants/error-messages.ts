@@ -24,6 +24,14 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 export function toUserErrorMessage(error: unknown): string {
   const apiError = error as Partial<ApiClientError> | undefined;
+  if (apiError?.code === 'INVALID_PROOF') {
+    const base = apiError.message && apiError.message.trim().length > 0
+      ? apiError.message
+      : ERROR_MESSAGES.INVALID_PROOF;
+    return apiError.correlationId
+      ? `${base} (correlation_id: ${apiError.correlationId})`
+      : base;
+  }
   if (apiError?.code && ERROR_MESSAGES[apiError.code]) {
     return ERROR_MESSAGES[apiError.code];
   }

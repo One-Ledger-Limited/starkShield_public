@@ -87,8 +87,11 @@ mod IntentVerifier {
                     if retdata.len() == 0 {
                         return false;
                     }
-                    let first_word = *retdata.at(0);
-                    first_word != 0
+                    // Garaga verifier returns `Option<Span<u256>>`:
+                    // Some(public_inputs) => tag = 0, None => tag = 1.
+                    // Previous `first_word != 0` logic inverted this and rejected valid proofs.
+                    let option_tag = *retdata.at(0);
+                    option_tag == 0
                 },
                 Result::Err(_) => false,
             }

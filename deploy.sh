@@ -37,11 +37,24 @@ fi
 
 mkdir -p backups
 BACKUP_FILE="backups/release-$(date +%Y%m%d%H%M%S).tar.gz"
-tar -czf "$BACKUP_FILE" "$COMPOSE_FILE" .env deploy.sh update.sh backup.sh 2>/dev/null || true
+tar -czf "$BACKUP_FILE" "$COMPOSE_FILE" .env deploy.sh update.sh backup.sh VERSION RELEASE_VERSION 2>/dev/null || true
 echo "💾 Backup created: $BACKUP_FILE"
+
+# Record deployed version (for audit/rollback traceability).
+# `auto-deploy.sh` writes RELEASE_VERSION; fall back to timestamp if missing.
+if [ -f "RELEASE_VERSION" ]; then
+  cp -f RELEASE_VERSION VERSION
+else
+  echo "unknown-$(date +%Y%m%d%H%M%S)" > VERSION
+fi
+echo "🏷️  Deploy version: $(cat VERSION 2>/dev/null || true)"
 
 echo "🛑 Stopping existing containers..."
 $COMPOSE_CMD -f "$COMPOSE_FILE" down --remove-orphans || true
+
+# Ensure frontend `/circuits/*` static files exist before image build.
+echo "🧩 Preparing frontend circuit assets..."
+bash deploy/scripts/prepare_frontend_circuit_assets.sh
 
 # If compose couldn't fully tear down (common on some hosts), ensure our named resources
 # are removed before recreating to avoid "already exists" conflicts.
@@ -61,6 +74,9 @@ $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
 
 echo "⏳ Waiting for services..."
 sleep 15
+
+echo "🧹 Resetting solver runtime intent state..."
+bash deploy/scripts/clear-intent-state.sh
 
 echo "🔎 Running deployment verification..."
 bash deploy/scripts/verify-prod.sh
