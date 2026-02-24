@@ -59,7 +59,7 @@ This guide will help you set up and run StarkShield locally for development.
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-org/starkshield.git
+git clone https://github.com/Shield-Trade/starkShield_public.git
 cd starkshield
 ```
 

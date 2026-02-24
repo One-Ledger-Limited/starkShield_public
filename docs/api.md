@@ -58,9 +58,11 @@ GET /health
 Submit a new trade intent with ZK proof.
 
 ```http
-POST /intent
+POST /v1/intents
 Content-Type: application/json
 ```
+
+Legacy alias: `POST /intent`
 
 **Request Body:**
 ```json
@@ -73,13 +75,22 @@ Content-Type: application/json
     "...",
     "..."
   ],
+  "proof_public_inputs": [
+    "12345678901234567890",
+    "98765432109876543210",
+    "1700000000"
+  ],
   "public_inputs": {
     "user": "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
     "token_in": "0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7",
     "token_out": "0x053c91253bc9682c04929ca02ed00b3e423f6710d2ee7e0d5ebb06f3ecf368a8",
     "amount_in": "1000000000000000000",
     "min_amount_out": "3000000000",
-    "deadline": 1704067200
+    "deadline": 1704067200,
+    "nonce": 1,
+    "chain_id": "SN_SEPOLIA",
+    "domain_separator": "starkshield-v1",
+    "version": 1
   },
   "encrypted_details": "base64_encoded_encrypted_intent_data",
   "signature": "user_signature_over_intent_hash"
@@ -91,7 +102,8 @@ Content-Type: application/json
 {
   "intent_id": "uuid-of-intent",
   "status": "pending",
-  "estimated_match_time": "< 30 seconds"
+  "estimated_match_time": "< 30 seconds",
+  "correlation_id": "f6c6e45f-6c9f-4cb4-b090-2ac5d0e45f42"
 }
 ```
 
@@ -106,8 +118,10 @@ Content-Type: application/json
 Get the status of a specific intent.
 
 ```http
-GET /intent/{nullifier}
+GET /v1/intents/{nullifier}
 ```
+
+Legacy alias: `GET /intent/{nullifier}`
 
 **Response:**
 ```json
@@ -136,8 +150,10 @@ GET /intent/{nullifier}
 Get all pending intents (public information only).
 
 ```http
-GET /intents/pending
+GET /v1/intents/pending
 ```
+
+Legacy alias: `GET /intents/pending`
 
 **Response:**
 ```json
@@ -164,8 +180,10 @@ GET /intents/pending
 Get solver statistics.
 
 ```http
-GET /stats
+GET /v1/stats
 ```
+
+Legacy alias: `GET /stats`
 
 **Response:**
 ```json
@@ -226,7 +244,8 @@ All errors follow this format:
   "error_detail": {
     "code": "ERROR_CODE",
     "message": "Human-readable error message"
-  }
+  },
+  "correlation_id": "f6c6e45f-6c9f-4cb4-b090-2ac5d0e45f42"
 }
 ```
 

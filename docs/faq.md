@@ -143,10 +143,9 @@ If market moves against you, the trade won't settle and you can resubmit.
 
 ### How can I run a solver?
 
-See the [Solver Documentation](./solver.md). Requirements:
+See the [API docs](./api.md) and [architecture](./architecture.md). Requirements:
 - Rust 1.70+
 - Redis
-- Staked tokens (Phase 2)
 
 ### How do I integrate with StarkShield?
 
@@ -159,7 +158,7 @@ For developers: Check our [API docs](./api.md)
 ### Where can I see the code?
 
 All code is open source on GitHub:
-- github.com/your-org/starkshield
+- https://github.com/Shield-Trade/starkShield_public
 
 ## Troubleshooting
 

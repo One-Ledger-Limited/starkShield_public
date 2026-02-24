@@ -81,7 +81,7 @@ No public mempool exposure means:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-org/starkshield.git
+git clone https://github.com/Shield-Trade/starkShield_public.git
 cd starkshield
 
 # 2. Install dependencies
