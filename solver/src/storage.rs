@@ -15,6 +15,7 @@ pub struct RedisStorage {
 pub struct MatchRetryState {
     pub failures: u64,
     pub next_retry_at_unix: u64,
+    pub terminal: bool,
 }
 
 impl RedisStorage {
@@ -61,9 +62,16 @@ impl RedisStorage {
             return Ok(None);
         }
 
+        let terminal: Option<u8> = redis::cmd("HGET")
+            .arg(&key)
+            .arg("terminal")
+            .query_async(&mut *conn)
+            .await?;
+
         Ok(Some(MatchRetryState {
             failures: failures.unwrap_or(0),
             next_retry_at_unix: next_retry_at_unix.unwrap_or(0),
+            terminal: terminal.unwrap_or(0) == 1,
         }))
     }
 
@@ -85,6 +93,12 @@ impl RedisStorage {
             .arg(next_retry_at_unix)
             .query_async::<_, ()>(&mut *conn)
             .await?;
+        redis::cmd("HDEL")
+            .arg(&key)
+            .arg("terminal")
+            .arg("terminal_reason")
+            .query_async::<_, ()>(&mut *conn)
+            .await?;
 
         // Avoid leaking keys forever.
         let _ = redis::cmd("EXPIRE")
@@ -96,6 +110,43 @@ impl RedisStorage {
         Ok(MatchRetryState {
             failures: failures.max(0) as u64,
             next_retry_at_unix,
+            terminal: false,
+        })
+    }
+
+    /// Marks retry state as terminal (do not retry automatically anymore).
+    pub async fn mark_match_retry_terminal(&self, match_id: &str, reason: &str) -> Result<MatchRetryState> {
+        let key = Self::match_retry_key(match_id);
+        let mut conn = self.connection.write().await;
+
+        let failures: Option<u64> = redis::cmd("HGET")
+            .arg(&key)
+            .arg("failures")
+            .query_async(&mut *conn)
+            .await?;
+        let failures = failures.unwrap_or(0);
+
+        redis::cmd("HSET")
+            .arg(&key)
+            .arg("terminal")
+            .arg(1)
+            .arg("terminal_reason")
+            .arg(reason)
+            .arg("next_retry_at_unix")
+            .arg(0)
+            .query_async::<_, ()>(&mut *conn)
+            .await?;
+
+        let _ = redis::cmd("EXPIRE")
+            .arg(&key)
+            .arg(7 * 24 * 60 * 60) // 7 days
+            .query_async::<_, ()>(&mut *conn)
+            .await;
+
+        Ok(MatchRetryState {
+            failures,
+            next_retry_at_unix: 0,
+            terminal: true,
         })
     }
 
@@ -383,9 +434,15 @@ impl RedisStorage {
 
     pub async fn mark_match_settled(&self, match_id: &str) -> Result<()> {
         let mut conn = self.connection.write().await;
+        let key = format!("matched:{}", match_id);
         redis::cmd("SREM")
             .arg("intents:matched")
             .arg(match_id)
+            .query_async::<_, ()>(&mut *conn)
+            .await?;
+        // Also delete the matched pair payload to avoid stale "matched" views.
+        redis::cmd("DEL")
+            .arg(&key)
             .query_async::<_, ()>(&mut *conn)
             .await?;
         Ok(())

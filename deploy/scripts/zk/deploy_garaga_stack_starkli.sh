@@ -36,10 +36,19 @@ extract_hex() {
 }
 
 extract_class_hash() {
-  # Prefer lines mentioning class hash; fallback to last hex.
+  # Prefer explicit declaration/already-declared class hash lines; avoid CASM hash lines.
   local out="$1"
   local h=""
-  h="$(printf "%s" "$out" | grep -Ei 'class hash' | grep -Eo '0x[0-9a-fA-F]+' | tail -n 1 || true)"
+  h="$(printf "%s" "$out" \
+    | grep -Ei 'Class hash declared|already declared\. Class hash' \
+    | grep -Eo '0x[0-9a-fA-F]+' \
+    | tail -n 1 || true)"
+  if [ -n "$h" ]; then
+    printf "%s" "$h"
+    return 0
+  fi
+  # Fallback for older starkli output formats.
+  h="$(printf "%s" "$out" | grep -Ei '^Class hash:' | grep -Eo '0x[0-9a-fA-F]+' | tail -n 1 || true)"
   if [ -n "$h" ]; then
     printf "%s" "$h"
     return 0
@@ -81,7 +90,7 @@ is_rate_limited() {
 
 is_nonce_error() {
   local out="$1"
-  printf "%s" "$out" | grep -qi 'InvalidTransactionNonce'
+  printf "%s" "$out" | grep -Eqi 'InvalidTransactionNonce|Invalid transaction nonce|NonceTooOld|account_nonce'
 }
 
 declare_with_retries() {
@@ -181,7 +190,24 @@ send_tx_with_retries() {
         if [ "$code" -eq 0 ]; then
           return 0
         fi
+        if ! is_nonce_error "$out"; then
+          if is_rate_limited "$out"; then
+            local wait_s
+            wait_s="$(retry_wait_seconds "$attempt")"
+            echo "⚠️  RPC rate-limited during ${label}; retrying in ${wait_s}s..."
+            sleep "$wait_s"
+            attempt=$((attempt + 1))
+            continue
+          fi
+          return "$code"
+        fi
       fi
+      local wait_s
+      wait_s="$(retry_wait_seconds "$attempt")"
+      echo "⚠️  Persistent nonce mismatch during ${label}; retrying in ${wait_s}s..."
+      sleep "$wait_s"
+      attempt=$((attempt + 1))
+      continue
     fi
 
     if is_rate_limited "$out"; then
@@ -276,12 +302,12 @@ else
 fi
 
 echo "🚀 Deploying Garaga verifier..."
-GARAGA_DEPLOY_OUT="$(send_tx_with_retries "Garaga deploy" starkli deploy "$GARAGA_CLASS_HASH" 2>&1 || true)"
-echo "$GARAGA_DEPLOY_OUT"
-if [ -z "$GARAGA_DEPLOY_OUT" ] || printf "%s" "$GARAGA_DEPLOY_OUT" | grep -qi '^Error:'; then
+if ! GARAGA_DEPLOY_OUT="$(send_tx_with_retries "Garaga deploy" starkli deploy "$GARAGA_CLASS_HASH" 2>&1)"; then
+  echo "$GARAGA_DEPLOY_OUT"
   echo "❌ Failed to deploy Garaga verifier." >&2
   exit 1
 fi
+echo "$GARAGA_DEPLOY_OUT"
 GARAGA_VERIFIER_ADDRESS="$(extract_contract_address "$GARAGA_DEPLOY_OUT")"
 if [ -z "$GARAGA_VERIFIER_ADDRESS" ]; then
   echo "❌ Could not parse Garaga verifier address from deploy output." >&2
@@ -289,12 +315,12 @@ if [ -z "$GARAGA_VERIFIER_ADDRESS" ]; then
 fi
 
 echo "🚀 Deploying IntentVerifier adapter..."
-INTENT_DEPLOY_OUT="$(send_tx_with_retries "Intent adapter deploy" starkli deploy "$INTENT_ADAPTER_CLASS_HASH" "$OWNER_ADDRESS" "$GARAGA_VERIFIER_ADDRESS" 2>&1 || true)"
-echo "$INTENT_DEPLOY_OUT"
-if [ -z "$INTENT_DEPLOY_OUT" ] || printf "%s" "$INTENT_DEPLOY_OUT" | grep -qi '^Error:'; then
+if ! INTENT_DEPLOY_OUT="$(send_tx_with_retries "Intent adapter deploy" starkli deploy "$INTENT_ADAPTER_CLASS_HASH" "$OWNER_ADDRESS" "$GARAGA_VERIFIER_ADDRESS" 2>&1)"; then
+  echo "$INTENT_DEPLOY_OUT"
   echo "❌ Failed to deploy IntentVerifier adapter." >&2
   exit 1
 fi
+echo "$INTENT_DEPLOY_OUT"
 INTENT_VERIFIER_ADDRESS="$(extract_contract_address "$INTENT_DEPLOY_OUT")"
 if [ -z "$INTENT_VERIFIER_ADDRESS" ]; then
   echo "❌ Could not parse IntentVerifier adapter address from deploy output." >&2

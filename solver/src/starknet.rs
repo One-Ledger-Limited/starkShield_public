@@ -523,17 +523,16 @@ fn append_intent_proof(calldata: &mut Vec<Felt>, intent: &crate::models::Intent)
         calldata.push(parse_felt_any(el)?);
     }
 
-    // Prefer prover-generated (base-unit) public inputs to avoid any decimals/unit ambiguity.
-    // Fallback to reconstructing from the human-readable inputs for backward compatibility.
-    let pub_inputs = if !intent.proof_public_inputs.is_empty() {
-        intent
-            .proof_public_inputs
-            .iter()
-            .map(|v| parse_felt_any(v))
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        public_inputs_to_felts(&intent.public_inputs)?
-    };
+    // The on-chain DarkPool contract uses `public_inputs` for business logic
+    // (_verify_intent_compatibility, _execute_settlement) and expects the layout:
+    //   [user, token_in, token_out, amount_in, min_amount_out, deadline]
+    //
+    // `proof_public_inputs` now contains SNARK-native public signals
+    // (intentHash, nullifier, currentTime) which are already embedded in the Garaga
+    // calldata (`proof_data`). The IntentVerifier ignores the `public_inputs` span
+    // for Groth16 verification, so we must always reconstruct the business-field
+    // layout here regardless of whether proof_public_inputs is populated.
+    let pub_inputs = public_inputs_to_felts(&intent.public_inputs)?;
     calldata.push(Felt::from(pub_inputs.len() as u64));
     calldata.extend(pub_inputs);
     Ok(())

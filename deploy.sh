@@ -75,6 +75,9 @@ $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
 echo "⏳ Waiting for services..."
 sleep 15
 
+echo "🧹 Resetting solver runtime intent state..."
+bash deploy/scripts/clear-intent-state.sh
+
 echo "🔎 Running deployment verification..."
 bash deploy/scripts/verify-prod.sh
 

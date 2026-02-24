@@ -573,12 +573,15 @@ async fn submit_intent(
             )),
         ));
     }
-    if !request.proof_public_inputs.is_empty() && request.proof_public_inputs.len() < 6 {
+    // Current Groth16 circuit uses nPublic=3 (VK IC length = 4).
+    // Older payloads may include additional business fields; accept either as long as
+    // minimum verifier-required public signals are present.
+    if !request.proof_public_inputs.is_empty() && request.proof_public_inputs.len() < 3 {
         return Err((
             StatusCode::BAD_REQUEST,
             JsonResponse(error_response(
                 "INVALID_PUBLIC_INPUTS",
-                "Invalid proof_public_inputs (expected at least 6 elements)",
+                "Invalid proof_public_inputs (expected at least 3 elements)",
                 Some(correlation_id),
             )),
         ));
@@ -632,6 +635,26 @@ async fn submit_intent(
             JsonResponse(error_response(
                 "DUPLICATE_INTENT",
                 "Intent already exists",
+                Some(correlation_id),
+            )),
+        ));
+    }
+
+    // Fail fast for invalid proofs by simulating DarkPool.submit_intent through RPC.
+    // This prevents invalid intents from entering the matching queue and getting stuck in `Matched`.
+    if let Err(reason) = preflight_verify_intent_proof(&state, &request).await {
+        warn!(
+            "Proof preflight verification failed: correlation_id={}, user={}, nullifier={}, reason={}",
+            correlation_id,
+            request.public_inputs.user,
+            request.nullifier,
+            reason
+        );
+        return Err((
+            StatusCode::BAD_REQUEST,
+            JsonResponse(error_response(
+                "INVALID_PROOF",
+                &format!("Proof preflight verification failed: {}", reason),
                 Some(correlation_id),
             )),
         ));
@@ -724,6 +747,86 @@ async fn submit_intent(
         estimated_match_time: Some("< 30 seconds".to_string()),
         correlation_id,
     }))
+}
+
+async fn preflight_verify_intent_proof(
+    state: &AppState,
+    request: &SubmitIntentRequest,
+) -> Result<(), String> {
+    fn parse_felt_any(input: &str) -> Result<Felt, String> {
+        let v = input.trim();
+        if v.is_empty() {
+            return Err("empty felt".to_string());
+        }
+        if v.starts_with("0x") || v.starts_with("0X") {
+            Felt::from_hex(v).map_err(|e| e.to_string())
+        } else {
+            Felt::from_dec_str(v).map_err(|e| e.to_string())
+        }
+    }
+    fn parse_named_felt(name: &str, input: &str) -> Result<Felt, String> {
+        parse_felt_any(input).map_err(|e| {
+            let v = input.trim();
+            let preview = if v.len() > 96 {
+                format!("{}...", &v[..96])
+            } else {
+                v.to_string()
+            };
+            format!("{} parse error: {} (value={})", name, e, preview)
+        })
+    }
+
+    let selector = get_selector_from_name("submit_intent").map_err(|e| e.to_string())?;
+    let contract = state.dark_pool_address;
+
+    // IntentProof ABI:
+    // [intent_hash, nullifier, proof_data_len, ...proof_data, public_inputs_len, ...public_inputs]
+    let mut calldata: Vec<Felt> = Vec::new();
+    calldata.push(parse_named_felt("intent_hash", &request.intent_hash)?);
+    calldata.push(parse_named_felt("nullifier", &request.nullifier)?);
+    calldata.push(Felt::from(request.proof_data.len() as u64));
+    for (idx, p) in request.proof_data.iter().enumerate() {
+        calldata.push(parse_named_felt(&format!("proof_data[{}]", idx), p)?);
+    }
+    calldata.push(Felt::from(request.proof_public_inputs.len() as u64));
+    for (idx, p) in request.proof_public_inputs.iter().enumerate() {
+        calldata.push(parse_named_felt(&format!("proof_public_inputs[{}]", idx), p)?);
+    }
+
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "starknet_call",
+        "params": [
+            {
+                "contract_address": format!("0x{:x}", contract),
+                "entry_point_selector": format!("0x{:x}", selector),
+                "calldata": calldata.into_iter().map(|v| format!("0x{:x}", v)).collect::<Vec<_>>(),
+            },
+            "latest"
+        ]
+    });
+
+    let json: serde_json::Value = reqwest::Client::new()
+        .post(&state.starknet_rpc)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(err) = json.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| err.to_string());
+        return Err(msg);
+    }
+
+    Ok(())
 }
 
 async fn enforce_balance_allowance_precheck(

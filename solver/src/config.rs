@@ -23,6 +23,7 @@ pub struct MatchingConfig {
     pub match_timeout_seconds: u64,
     pub batch_size: usize,
     pub poll_interval_ms: u64,
+    pub max_invalid_proof_retries: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +107,10 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(1000),
+                max_invalid_proof_retries: env::var("MAX_INVALID_PROOF_RETRIES")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(5),
             },
             api_config: ApiConfig {
                 max_intent_size_bytes: env::var("MAX_INTENT_SIZE_BYTES")

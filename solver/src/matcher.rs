@@ -3,7 +3,6 @@ use std::sync::Arc;
 use tracing::{info, debug, warn, error};
 use tokio::time::{interval, Duration};
 use num_bigint::BigUint;
-use std::str::FromStr;
 
 use crate::config::MatchingConfig;
 use crate::models::{Intent, IntentStatus, MatchedPair, SettlementData};
@@ -19,16 +18,23 @@ pub struct IntentMatcher {
 }
 
 impl IntentMatcher {
-    fn amounts_in_base_units(intent: &Intent) -> Option<(BigUint, BigUint)> {
-        // Prefer prover-supplied base-unit values:
-        // [user, tokenIn, tokenOut, amountIn, minAmountOut, deadline]
-        if intent.proof_public_inputs.len() >= 5 {
-            let amount_in = BigUint::from_str(&intent.proof_public_inputs[3]).ok()?;
-            let min_out = BigUint::from_str(&intent.proof_public_inputs[4]).ok()?;
-            return Some((amount_in, min_out));
-        }
+    fn is_precheck_rpc_unavailable(reason: &str) -> bool {
+        let r = reason.to_ascii_lowercase();
+        r.contains("cu limit exceeded")
+            || r.contains("request too fast")
+            || r.contains("rate limit")
+            || r.contains("429")
+            || r.contains("timeout")
+            || r.contains("temporarily unavailable")
+    }
 
-        // Backward compatibility for older intents without proof_public_inputs.
+    fn amounts_in_base_units(intent: &Intent) -> Option<(BigUint, BigUint)> {
+        // Convert human-readable token amounts from public_inputs to base units
+        // using the known decimals for each token address.
+        //
+        // Note: proof_public_inputs contains SNARK-native signals (intentHash,
+        // nullifier, currentTime) — NOT business fields — so we always derive
+        // amounts from the human-readable public_inputs fields.
         let in_decimals = token_decimals_for(&intent.public_inputs.token_in);
         let out_decimals = token_decimals_for(&intent.public_inputs.token_out);
         let amount_in = parse_amount_to_base_units(&intent.public_inputs.amount_in, in_decimals).ok()?;
@@ -260,41 +266,11 @@ impl IntentMatcher {
         // Auto-settle on-chain immediately after match creation.
         // This requires the solver account to be configured and funded.
         if self.auto_settle_onchain {
-            let client = self
-                .starknet
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("AUTO_SETTLE_ONCHAIN enabled but Starknet client is not configured"))?;
-
-            // Best-effort on-chain precheck to avoid submitting a settlement tx that will revert
-            // (most commonly due to insufficient balance/allowance).
-            if let Err(reason) = self.precheck_settlement(client, &matched_pair).await {
-                warn!(
-                    "Skipping auto-settlement for match {} due to precheck failure: {}",
-                    matched_pair.id, reason
-                );
-                return Ok(());
-            }
-
-            match client.settle_match(&matched_pair).await {
-                Ok(tx_hash) => {
-                    self.storage.update_intent_status(
-                        &intent_a.nullifier,
-                        IntentStatus::Settled,
-                        Some(intent_b.nullifier.clone()),
-                        Some(tx_hash.clone()),
-                    ).await?;
-                    self.storage.update_intent_status(
-                        &intent_b.nullifier,
-                        IntentStatus::Settled,
-                        Some(intent_a.nullifier.clone()),
-                        Some(tx_hash),
-                    ).await?;
-                    self.storage.mark_match_settled(&matched_pair.id).await?;
-                    info!("Auto-settled match {} on-chain", matched_pair.id);
-                }
+            match self.settle_match(matched_pair.clone()).await {
+                Ok(()) => info!("Auto-settled match {} on-chain", matched_pair.id),
                 Err(e) => {
                     error!("Auto-settlement failed for match {}: {}", matched_pair.id, e);
-                    // Keep status as Matched so it can be retried manually later via confirm endpoint.
+                    // Keep status as Matched so it can be retried by loop/manual confirm.
                 }
             }
         }
@@ -324,7 +300,14 @@ impl IntentMatcher {
         if let Some(client) = &self.starknet {
             // Avoid submitting a tx that is guaranteed to revert due to missing approvals/balances.
             if let Err(reason) = self.precheck_settlement(client, &pair).await {
-                return Err(anyhow::anyhow!(reason));
+                if Self::is_precheck_rpc_unavailable(&reason) {
+                    warn!(
+                        "Settlement precheck unavailable for match {} ({}); proceeding with on-chain attempt",
+                        pair.id, reason
+                    );
+                } else {
+                    return Err(anyhow::anyhow!(reason));
+                }
             }
             let tx_hash = client.settle_match(&pair).await?;
             self.storage.update_intent_status(
@@ -385,6 +368,11 @@ impl IntentMatcher {
         let is_funding_error = |msg: &str| {
             msg.contains("INSUFFICIENT_BALANCE") || msg.contains("INSUFFICIENT_ALLOWANCE")
         };
+        let is_invalid_proof_error = |msg: &str| {
+            msg.contains("Invalid proofs")
+                || msg.contains("INVALID_PROOF")
+                || msg.contains("INVALID_PROOFS")
+        };
 
         // Backoff after 3 consecutive failures:
         // 3 -> 5m, 4 -> 10m, 5 -> 20m ... capped at 1h.
@@ -395,9 +383,18 @@ impl IntentMatcher {
             let exp = (failures - 3).min(6);
             (300u64).saturating_mul(1u64 << exp).min(3600)
         };
+        // Invalid proof is deterministic in most cases; back off from the first failure.
+        let compute_invalid_proof_backoff_secs = |failures: u64| -> u64 {
+            let exp = failures.saturating_sub(1).min(6);
+            (60u64).saturating_mul(1u64 << exp).min(3600)
+        };
 
         for pair in pairs {
             if let Ok(Some(state)) = self.storage.get_match_retry_state(&pair.id).await {
+                if state.terminal {
+                    debug!("Skipping retry for match {} (terminal retry state)", pair.id);
+                    continue;
+                }
                 if state.next_retry_at_unix > now {
                     debug!(
                         "Skipping retry for match {} until {} (failures={})",
@@ -411,7 +408,7 @@ impl IntentMatcher {
             if let Err(e) = self.settle_match(pair.clone()).await {
                 // Common case: allowances haven't updated yet. Keep it in the set for the next retry.
                 let msg = e.to_string();
-                if is_funding_error(&msg) {
+                if is_funding_error(&msg) || is_invalid_proof_error(&msg) {
                     let current_failures = self
                         .storage
                         .get_match_retry_state(&pair.id)
@@ -421,7 +418,27 @@ impl IntentMatcher {
                         .map(|s| s.failures)
                         .unwrap_or(0);
                     let next_failures = current_failures + 1;
-                    let backoff = compute_backoff_secs(next_failures);
+
+                    if is_invalid_proof_error(&msg)
+                        && next_failures >= self.config.max_invalid_proof_retries
+                    {
+                        let _ = self
+                            .storage
+                            .mark_match_retry_terminal(&pair.id, "INVALID_PROOFS")
+                            .await;
+                        let _ = self.storage.mark_match_settled(&pair.id).await;
+                        warn!(
+                            "Stopped retrying match {} after {} invalid-proof failures",
+                            pair.id, next_failures
+                        );
+                        continue;
+                    }
+
+                    let backoff = if is_invalid_proof_error(&msg) {
+                        compute_invalid_proof_backoff_secs(next_failures)
+                    } else {
+                        compute_backoff_secs(next_failures)
+                    };
                     let next_retry_at_unix = now.saturating_add(backoff);
                     let _ = self.storage.bump_match_retry_state(&pair.id, next_retry_at_unix).await;
                     if backoff > 0 {
