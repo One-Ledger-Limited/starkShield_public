@@ -85,7 +85,7 @@ StarkShield/
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/starkshield.git
+git clone https://github.com/Shield-Trade/starkShield_public.git
 cd starkshield
 
 # Install dependencies
